@@ -1,0 +1,15 @@
+[package]
+name = "miracast-daemon"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+miracast-doctor = { path = "../doctor" }
+miracast-capture = { path = "../capture" }
+miracast-stream = { path = "../stream" }
+miracast-net = { path = "../net" }
+miracast-rtsp = { path = "../rtsp" }
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true

@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "crates/doctor",
+    "crates/capture",
+    "crates/stream",
+    "crates/net",
+    "crates/rtsp",
+    "crates/daemon",
+    "crates/cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["sway-miracast contributors"]
+repository = "https://github.com/yourname/sway-miracast"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"

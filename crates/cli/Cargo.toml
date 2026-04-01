@@ -1,0 +1,16 @@
+[package]
+name = "miracast-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "miracast"
+path = "src/main.rs"
+
+[dependencies]
+miracast-daemon = { path = "../daemon" }
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true

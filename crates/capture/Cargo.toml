@@ -1,0 +1,10 @@
+[package]
+name = "miracast-capture"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# pipewire = "0.8"  # TODO: add when implementing actual capture
