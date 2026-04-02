@@ -376,7 +376,7 @@ impl RtspSession {
     /// ```
     pub fn process_options(&mut self) -> Result<String, RtspError> {
         self.transition_to(SessionState::OptionsReceived);
-        Ok("Public: org.wfa.wfd1.0, SETUP, TEARDOWN, PLAY, PAUSE, GET_PARAMETER, SET_PARAMETER\r\n".to_string())
+        Ok("Public: org.wfa.wfd1.0, OPTIONS, DESCRIBE, GET_PARAMETER, PAUSE, PLAY, SETUP, SET_PARAMETER, TEARDOWN\r\n".to_string())
     }
 
     /// Processes a GET_PARAMETER RTSP command for the specified parameter names
