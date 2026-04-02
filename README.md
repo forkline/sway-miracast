@@ -153,6 +153,22 @@ All code follows the Rust style guidelines and includes comprehensive unit tests
 
 **Status: Alpha** - Components under active development, API subject to change
 
+### Testing
+
+For detailed testing instructions, see [docs/TESTING.md](docs/TESTING.md).
+
+Quick test:
+```bash
+# Run system verification script
+./scripts/test-system.sh
+
+# Run unit tests
+cargo test --workspace
+
+# Run system diagnostics
+cargo run --example check_system -p miracast-doctor
+```
+
 Current status by milestone ([view roadmap](docs/milestones.md)):
 - ✅ Project foundation and workspace setup
 - ✅ Basic doctor and system validation tools 
