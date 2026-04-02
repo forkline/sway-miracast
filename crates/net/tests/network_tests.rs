@@ -51,6 +51,7 @@ mod network_tests {
         let sink = Sink {
             name: "Samsung Smart TV".to_string(),
             address: "AA:BB:CC:DD:EE:FF".to_string(),
+            peer_path: None,
             ip_address: Some("192.168.1.50".to_string()),
             go_ip_address: Some("192.168.1.1".to_string()),
             rtsp_port: 7236,
@@ -66,6 +67,7 @@ mod network_tests {
         let minimal_sink = Sink {
             name: "Display".to_string(),
             address: "11:22:33:44:55:66".to_string(),
+            peer_path: None,
             ip_address: None,
             go_ip_address: None,
             rtsp_port: 7236,
@@ -111,6 +113,7 @@ mod network_tests {
             let sink = Sink {
                 name: "Test".to_string(),
                 address: mac.to_string(),
+                peer_path: None,
                 ip_address: None,
                 go_ip_address: None,
                 rtsp_port: 7236,
@@ -133,6 +136,7 @@ mod network_tests {
             let sink = Sink {
                 name: "Test Device".to_string(),
                 address: "AA:BB:CC:DD:EE:FF".to_string(),
+                peer_path: None,
                 ip_address: Some(ip.to_string()),
                 go_ip_address: Some("192.168.49.1".to_string()),
                 rtsp_port: 7236,
@@ -174,6 +178,7 @@ mod network_tests {
             Sink {
                 name: "LG TV".to_string(),
                 address: "AA:BB:CC:11:22:33".to_string(),
+                peer_path: None,
                 ip_address: None,
                 go_ip_address: None,
                 rtsp_port: 7236,
@@ -182,6 +187,7 @@ mod network_tests {
             Sink {
                 name: "Samsung Monitor".to_string(),
                 address: "DD:EE:FF:44:55:66".to_string(),
+                peer_path: None,
                 ip_address: None,
                 go_ip_address: None,
                 rtsp_port: 7236,
@@ -190,6 +196,7 @@ mod network_tests {
             Sink {
                 name: "Fire TV Stick".to_string(),
                 address: "11:22:33:AA:BB:CC".to_string(),
+                peer_path: None,
                 ip_address: None,
                 go_ip_address: None,
                 rtsp_port: 7236,

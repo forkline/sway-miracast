@@ -40,6 +40,36 @@ trait NetworkManager {
 }
 
 #[zbus::proxy(
+    interface = "fi.w1.wpa_supplicant1",
+    default_service = "fi.w1.wpa_supplicant1",
+    default_path = "/fi/w1/wpa_supplicant1"
+)]
+trait WpaSupplicant {
+    #[zbus(property)]
+    #[allow(non_snake_case)]
+    fn Interfaces(&self) -> zbus::Result<Vec<zvariant::OwnedObjectPath>>;
+}
+
+#[zbus::proxy(
+    interface = "fi.w1.wpa_supplicant1.Interface",
+    default_service = "fi.w1.wpa_supplicant1"
+)]
+trait WpaInterface {
+    #[zbus(property)]
+    #[allow(non_snake_case)]
+    fn Ifname(&self) -> zbus::Result<String>;
+}
+
+#[zbus::proxy(
+    interface = "fi.w1.wpa_supplicant1.Interface.P2PDevice",
+    default_service = "fi.w1.wpa_supplicant1"
+)]
+trait WpaP2PDevice {
+    #[zbus(signal)]
+    async fn group_started(&self, properties: HashMap<String, zvariant::OwnedValue>);
+}
+
+#[zbus::proxy(
     interface = "org.freedesktop.NetworkManager.Device.WifiP2P",
     default_service = "org.freedesktop.NetworkManager"
 )]
@@ -122,6 +152,7 @@ pub struct P2pConfig {
 pub struct Sink {
     pub name: String,
     pub address: String,
+    pub peer_path: Option<zvariant::OwnedObjectPath>,
     pub ip_address: Option<String>,
     pub go_ip_address: Option<String>,
     pub rtsp_port: u16,
@@ -168,7 +199,7 @@ pub struct P2pConnection {
 struct GroupStartedInfo {
     interface_name: String,
     ip_address: String,
-    go_ip_address: String,
+    go_ip_address: Option<String>,
 }
 
 pub struct P2pManager {
@@ -408,6 +439,7 @@ impl P2pManager {
         Ok(Some(Sink {
             name,
             address: hw_address,
+            peer_path: Some(peer_path.clone()),
             ip_address: None,
             go_ip_address: None,
             rtsp_port: parse_wfd_rtsp_port(&wfd_ies),
@@ -434,7 +466,13 @@ impl P2pManager {
 
         let device_obj_path = zvariant::ObjectPath::try_from(device_path.as_str())
             .map_err(NetError::ZVariantError)?;
-        let root_path = zvariant::ObjectPath::try_from("/").map_err(NetError::ZVariantError)?;
+        let peer_obj_path = sink
+            .peer_path
+            .as_ref()
+            .ok_or(NetError::PeerNotFound)
+            .and_then(|path| {
+                zvariant::ObjectPath::try_from(path.as_str()).map_err(NetError::ZVariantError)
+            })?;
 
         let mut wifi_p2p_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
         wifi_p2p_props.insert(
@@ -501,7 +539,7 @@ impl P2pManager {
             .add_and_activate_connection2(
                 connection_config,
                 device_obj_path,
-                root_path,
+                peer_obj_path,
                 activation_options,
             )
             .await
@@ -546,13 +584,17 @@ impl P2pManager {
                     .unwrap_or_else(|| self.config.interface_name.clone()),
             )
         };
-        let go_ip_address = group_started.map(|info| info.go_ip_address);
+        let go_ip_address = group_started
+            .as_ref()
+            .and_then(|info| info.go_ip_address.clone())
+            .or_else(|| Self::derive_go_ip_address(&ip_address));
 
         tracing::info!("Got IP address: {}", ip_address);
 
         let connected_sink = Sink {
             name: sink.name.clone(),
             address: sink.address.clone(),
+            peer_path: sink.peer_path.clone(),
             ip_address: Some(ip_address),
             go_ip_address,
             rtsp_port: sink.rtsp_port,
@@ -566,6 +608,48 @@ impl P2pManager {
     }
 
     async fn wait_for_group_started(&self) -> Option<GroupStartedInfo> {
+        if let Some(info) = self.wait_for_group_started_dbus().await {
+            return Some(info);
+        }
+
+        self.wait_for_group_started_journal().await
+    }
+
+    async fn wait_for_group_started_dbus(&self) -> Option<GroupStartedInfo> {
+        let p2p_device_path = self.find_wpa_p2p_device_path().await.ok()?;
+        let p2p_device = WpaP2PDeviceProxy::builder(&self.connection)
+            .path(p2p_device_path)
+            .ok()?
+            .build()
+            .await
+            .ok()?;
+        let mut group_started = p2p_device.receive_group_started().await.ok()?;
+
+        let timeout = Duration::from_millis(
+            (Self::GROUP_STARTED_POLL_ATTEMPTS as u64) * Self::GROUP_STARTED_POLL_DELAY_MS,
+        );
+
+        tokio::time::timeout(timeout, async {
+            while let Some(signal) = group_started.next().await {
+                let args = signal.args().ok()?;
+                if let Some(info) = self.parse_group_started_properties(&args.properties).await {
+                    tracing::info!(
+                        "Observed P2P group start over D-Bus on {} with local {}",
+                        info.interface_name,
+                        info.ip_address
+                    );
+                    return Some(info);
+                }
+            }
+
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    async fn wait_for_group_started_journal(&self) -> Option<GroupStartedInfo> {
         use std::process::Command;
 
         for _ in 0..Self::GROUP_STARTED_POLL_ATTEMPTS {
@@ -592,7 +676,7 @@ impl P2pManager {
                     "Observed P2P group start on {} with local {} and GO {}",
                     info.interface_name,
                     info.ip_address,
-                    info.go_ip_address
+                    info.go_ip_address.as_deref().unwrap_or("unknown")
                 );
                 return Some(info);
             }
@@ -601,6 +685,64 @@ impl P2pManager {
         }
 
         None
+    }
+
+    async fn find_wpa_p2p_device_path(&self) -> Result<zvariant::OwnedObjectPath, NetError> {
+        let wpa = WpaSupplicantProxy::new(&self.connection).await?;
+        let expected_ifname = format!("p2p-dev-{}", self.config.interface_name);
+
+        for path in wpa.Interfaces().await? {
+            let interface = WpaInterfaceProxy::builder(&self.connection)
+                .path(path.clone())?
+                .build()
+                .await?;
+
+            if interface.Ifname().await? == expected_ifname {
+                return Ok(path);
+            }
+        }
+
+        Err(NetError::DeviceNotFound(format!(
+            "No wpa_supplicant P2P device found for {}",
+            expected_ifname
+        )))
+    }
+
+    async fn parse_group_started_properties(
+        &self,
+        properties: &HashMap<String, zvariant::OwnedValue>,
+    ) -> Option<GroupStartedInfo> {
+        let interface_object: zvariant::OwnedObjectPath = (*properties.get("interface_object")?)
+            .try_clone()
+            .ok()?
+            .try_into()
+            .ok()?;
+        let role: String = (*properties.get("role")?)
+            .try_clone()
+            .ok()?
+            .try_into()
+            .ok()?;
+        if role != "client" {
+            return None;
+        }
+
+        let interface = WpaInterfaceProxy::builder(&self.connection)
+            .path(interface_object)
+            .ok()?
+            .build()
+            .await
+            .ok()?;
+        let interface_name = interface.Ifname().await.ok()?;
+        let ip_address = self
+            .wait_for_p2p_interface_address(Some(&interface_name))
+            .await?
+            .1;
+
+        Some(GroupStartedInfo {
+            interface_name,
+            ip_address,
+            go_ip_address: None,
+        })
     }
 
     async fn wait_for_p2p_interface_address(
@@ -639,7 +781,7 @@ impl P2pManager {
         Some(GroupStartedInfo {
             interface_name,
             ip_address,
-            go_ip_address,
+            go_ip_address: Some(go_ip_address),
         })
     }
 
@@ -786,6 +928,19 @@ impl P2pManager {
         fallback
     }
 
+    fn derive_go_ip_address(ip_address: &str) -> Option<String> {
+        let mut parts = ip_address.split('.');
+        let a = parts.next()?;
+        let b = parts.next()?;
+        let c = parts.next()?;
+        let d = parts.next()?;
+        if parts.next().is_some() || d.parse::<u8>().is_err() {
+            return None;
+        }
+
+        Some(format!("{}.{}.{}.1", a, b, c))
+    }
+
     pub async fn disconnect(&self) -> Result<(), NetError> {
         let p2p = self
             .p2p_proxy
@@ -916,7 +1071,7 @@ mod tests {
 
         assert_eq!(info.interface_name, "p2p-wlp2s0-7");
         assert_eq!(info.ip_address, "192.168.49.10");
-        assert_eq!(info.go_ip_address, "192.168.49.1");
+        assert_eq!(info.go_ip_address.as_deref(), Some("192.168.49.1"));
     }
 
     #[tokio::test]
