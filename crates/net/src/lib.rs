@@ -11,6 +11,18 @@ use zbus::Connection;
 trait NetworkManager {
     async fn get_devices(&self) -> zbus::Result<Vec<zvariant::OwnedObjectPath>>;
     async fn get_device_by_ip_iface(&self, iface: &str) -> zbus::Result<zvariant::OwnedObjectPath>;
+    async fn activate_connection(
+        &self,
+        connection: zvariant::ObjectPath<'_>,
+        device: zvariant::ObjectPath<'_>,
+        specific_object: zvariant::ObjectPath<'_>,
+    ) -> zbus::Result<zvariant::OwnedObjectPath>;
+    async fn add_and_activate_connection(
+        &self,
+        connection: HashMap<&str, HashMap<&str, zvariant::Value<'_>>>,
+        device: zvariant::ObjectPath<'_>,
+        specific_object: zvariant::ObjectPath<'_>,
+    ) -> zbus::Result<(zvariant::OwnedObjectPath, zvariant::OwnedObjectPath)>;
 
     #[zbus(signal)]
     async fn device_added(&self, device_path: zvariant::OwnedObjectPath);
@@ -21,23 +33,11 @@ trait NetworkManager {
     default_service = "org.freedesktop.NetworkManager"
 )]
 trait WifiP2P {
-    async fn start(&self) -> zbus::Result<()>;
-    async fn stop(&self) -> zbus::Result<()>;
     async fn start_find(&self, options: HashMap<&str, zvariant::Value<'_>>) -> zbus::Result<()>;
     async fn stop_find(&self) -> zbus::Result<()>;
-    async fn create_group(&self, props: HashMap<&str, zvariant::Value<'_>>) -> zbus::Result<()>;
-    async fn request_group(
-        &self,
-        peer_path: &zvariant::ObjectPath<'_>,
-        wfd_properties: HashMap<&str, zvariant::Value<'_>>,
-    ) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn peers(&self) -> zbus::Result<Vec<zvariant::OwnedObjectPath>>;
-    #[zbus(property)]
-    fn group(&self) -> zbus::Result<zvariant::OwnedObjectPath>;
-    #[zbus(property)]
-    fn wfd_properties(&self) -> zbus::Result<HashMap<String, zvariant::OwnedValue>>;
 
     #[zbus(signal)]
     async fn peer_added(&self, peer: zvariant::OwnedObjectPath);
@@ -46,7 +46,7 @@ trait WifiP2P {
 }
 
 #[zbus::proxy(
-    interface = "org.freedesktop.NetworkManager.Device.P2P.Peer",
+    interface = "org.freedesktop.NetworkManager.WifiP2PPeer",
     default_service = "org.freedesktop.NetworkManager"
 )]
 trait P2PPeer {
@@ -63,7 +63,8 @@ trait P2PPeer {
     #[zbus(property)]
     fn serial(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    fn wfd_ies(&self) -> zbus::Result<Vec<u8>>;
+    #[allow(non_snake_case)]
+    fn WfdIEs(&self) -> zbus::Result<Vec<u8>>;
     #[zbus(property)]
     fn name(&self) -> zbus::Result<String>;
     #[zbus(property)]
@@ -176,8 +177,15 @@ impl P2pManager {
 
             let device_type = device_proxy.device_type().await?;
 
-            // NM_DEVICE_TYPE_WIFI_P2P = 29
-            if device_type == 29 {
+            // NM_DEVICE_TYPE_WIFI_P2P = 30 (from NetworkManager headers)
+            // NM_DEVICE_TYPE_GENERIC = 29
+            tracing::debug!(
+                "Device {} has type {} (interface: {})",
+                device_path,
+                device_type,
+                device_proxy.interface().await.unwrap_or_default()
+            );
+            if device_type == 30 {
                 self.p2p_proxy = Some(
                     WifiP2PProxy::builder(&self.connection)
                         .path(device_path.clone())?
@@ -271,7 +279,13 @@ impl P2pManager {
                 .await
                 .unwrap_or_else(|_| "Unknown Peer".to_string());
 
-            let wfd_ies = peer.wfd_ies().await.unwrap_or_default();
+            let wfd_ies = peer.WfdIEs().await.unwrap_or_default();
+            tracing::debug!(
+                "Peer {} WFD IEs length: {}, data: {:02x?}",
+                name,
+                wfd_ies.len(),
+                wfd_ies
+            );
 
             if is_miracast_sink(&wfd_ies) {
                 sinks.push(Sink {
@@ -296,74 +310,67 @@ impl P2pManager {
     }
 
     pub async fn connect(&self, sink: &Sink) -> Result<P2pConnection, NetError> {
-        let p2p = self
+        let _p2p = self
             .p2p_proxy
             .as_ref()
             .ok_or_else(|| NetError::DeviceNotFound("P2P device not initialized".into()))?;
 
-        // Find the peer by address
-        let peer_paths = p2p
-            .peers()
-            .await
-            .map_err(|e| NetError::NetworkManagerError(format!("Failed to get peers: {}", e)))?;
-
-        let target_peer_path = self
-            .find_peer_by_address(&peer_paths, &sink.address)
-            .await?;
-
-        // Prepare WFD properties for connection
-        let wfd_props: HashMap<&str, zvariant::Value> = HashMap::from([
-            ("source", zvariant::Value::Bool(true)),
-            ("sink", zvariant::Value::Bool(false)),
-        ]);
+        let device_path = self
+            .device_path
+            .as_ref()
+            .ok_or_else(|| NetError::DeviceNotFound("P2P device path not set".into()))?;
 
         tracing::info!(
-            "Requesting group formation with: {} ({})",
+            "Creating P2P connection to: {} ({})",
             sink.name,
             sink.address
         );
 
-        // Request to join/create group with the peer
-        p2p.request_group(&target_peer_path, wfd_props)
+        let device_obj_path = zvariant::ObjectPath::try_from(device_path.as_str())
+            .map_err(NetError::ZVariantError)?;
+        let root_path = zvariant::ObjectPath::try_from("/")
+            .map_err(NetError::ZVariantError)?;
+
+        let mut wifi_p2p_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
+        wifi_p2p_props.insert("peer", zvariant::Value::Str(zvariant::Str::from(&sink.address)));
+
+        let wfd_ies: Vec<u8> = vec![
+            0x00, 0x00, 0x06, 0x01, 0x13, 0x1c, 0x44, 0x00, 0x32,
+        ];
+        wifi_p2p_props.insert("wfd-ies", zvariant::Value::Array(zvariant::Array::from(&wfd_ies)));
+
+        let mut connection_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
+        connection_props.insert("type", zvariant::Value::Str(zvariant::Str::from("wifi-p2p")));
+        connection_props.insert("id", zvariant::Value::Str(zvariant::Str::from(&self.config.group_name)));
+        connection_props.insert("autoconnect", zvariant::Value::Bool(false));
+
+        let mut ipv4_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
+        ipv4_props.insert("method", zvariant::Value::Str(zvariant::Str::from("auto")));
+
+        let connection_config: HashMap<&str, HashMap<&str, zvariant::Value<'_>>> = HashMap::from([
+            ("connection", connection_props),
+            ("wifi-p2p", wifi_p2p_props),
+            ("ipv4", ipv4_props),
+        ]);
+
+        tracing::debug!("Connection config: {:?}", connection_config);
+
+        let (conn_path, active_conn_path) = self
+            .nm_proxy
+            .add_and_activate_connection(connection_config, device_obj_path, root_path)
             .await
-            .map_err(|e| NetError::ConnectionFailed(format!("Failed to request group: {}", e)))?;
+            .map_err(|e| NetError::ConnectionFailed(format!("Failed to add connection: {}", e)))?;
 
-        // Wait for group formation
-        let group_formed = tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                match p2p.group().await {
-                    Ok(group_path) => {
-                        let root_path = zvariant::ObjectPath::try_from("/").ok();
-                        if root_path.as_ref() != Some(&group_path) {
-                            tracing::info!("Group formed successfully");
-                            return Ok::<(), NetError>(());
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!("Error getting group info: {}, retrying...", e);
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-        })
-        .await;
-
-        if group_formed.is_err() {
-            return Err(NetError::ConnectionFailed(
-                "Timed out waiting for group formation".to_string(),
-            ));
-        }
-
-        // Get connection IP address
-        let ip_address = self
-            .get_assigned_ip_for_group()
-            .await
-            .unwrap_or_else(|_| "192.168.10.1".to_string());
+        tracing::info!(
+            "Connection activated: {} (active: {})",
+            conn_path,
+            active_conn_path
+        );
 
         let connected_sink = Sink {
             name: sink.name.clone(),
             address: sink.address.clone(),
-            ip_address: Some(ip_address.clone()),
+            ip_address: Some("192.168.10.1".to_string()),
             wfd_capabilities: sink.wfd_capabilities.clone(),
         };
 
@@ -373,47 +380,17 @@ impl P2pManager {
         })
     }
 
-    async fn find_peer_by_address(
-        &self,
-        peer_paths: &[zvariant::OwnedObjectPath],
-        address: &str,
-    ) -> Result<zvariant::OwnedObjectPath, NetError> {
-        for peer_path in peer_paths {
-            let peer = P2PPeerProxy::builder(&self.connection)
-                .path(peer_path)?
-                .build()
-                .await
-                .map_err(|e| {
-                    NetError::NetworkManagerError(format!("Failed to create peer proxy: {}", e))
-                })?;
-
-            match peer.hw_address().await {
-                Ok(hw_addr) if hw_addr.to_lowercase() == address.to_lowercase() => {
-                    return Ok(peer_path.clone());
-                }
-                Ok(_) => continue,
-                Err(_) => continue,
-            }
-        }
-
-        Err(NetError::PeerNotFound)
-    }
-
-    async fn get_assigned_ip_for_group(&self) -> Result<String, NetError> {
-        Ok("192.168.10.1".to_string())
-    }
-
     pub async fn disconnect(&self) -> Result<(), NetError> {
         let p2p = self
             .p2p_proxy
             .as_ref()
             .ok_or_else(|| NetError::DeviceNotFound("P2P device not initialized".into()))?;
 
-        p2p.stop()
+        p2p.stop_find()
             .await
-            .map_err(|e| NetError::NetworkManagerError(format!("Failed to stop P2P: {}", e)))?;
+            .map_err(|e| NetError::NetworkManagerError(format!("Failed to stop P2P find: {}", e)))?;
 
-        tracing::info!("Disconnected from P2P connection");
+        tracing::info!("Stopped P2P discovery");
         Ok(())
     }
 
@@ -443,9 +420,15 @@ impl P2pConnection {
 }
 
 fn is_miracast_sink(wfd_ies: &[u8]) -> bool {
-    wfd_ies
-        .windows(4)
-        .any(|w| w.len() >= 4 && w[0] == 0xdd && w[3] == 0x0a)
+    if wfd_ies.is_empty() {
+        return false;
+    }
+    let first_byte = wfd_ies[0];
+    tracing::debug!("WFD IEs: {:02x?}, first_byte: 0x{:02x}", wfd_ies, first_byte);
+    if first_byte == 0xdd && wfd_ies.len() >= 4 && wfd_ies[3] == 0x0a {
+        return true;
+    }
+    first_byte == 0x00 || first_byte == 0x01 || first_byte == 0x06 || first_byte == 0x07
 }
 
 fn parse_wfd_capabilities(wfd_ies: &[u8]) -> String {
