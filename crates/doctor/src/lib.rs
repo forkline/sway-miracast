@@ -263,12 +263,10 @@ pub fn check_wpa_supplicant() -> anyhow::Result<CheckResult> {
 }
 
 pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
-    // Check for xdg-desktop-portal and portal implementations
     let output = Command::new("pgrep").arg("xdg-desktop-portal").output();
 
     match output {
         Ok(o) if o.status.success() && !o.stdout.is_empty() => {
-            // Check specifically for wlr backend
             let wlr_output = Command::new("pgrep").arg("xdg-desktop-portal-wlr").output();
 
             match wlr_output {
@@ -276,7 +274,6 @@ pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
                     "xdg-desktop-portal with WLR backend running",
                 )),
                 _ => {
-                    // Find out what backend is running
                     let ps_output = Command::new("ps").arg("aux").output();
                     if let Ok(ps) = ps_output {
                         let stdout = String::from_utf8_lossy(&ps.stdout);
@@ -296,7 +293,6 @@ pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
             }
         }
         _ => {
-            // Look for any portal processes
             let all_portals = Command::new("pgrep").arg("desktop-portal").output();
 
             match all_portals {
@@ -306,5 +302,90 @@ pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
                 _ => Ok(CheckResult::error("No xdg-desktop-portal services running (required for screen sharing)")),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_enum() {
+        assert!(matches!(Status::Ok, Status::Ok));
+        assert!(matches!(Status::Warn, Status::Warn));
+        assert!(matches!(Status::Error, Status::Error));
+    }
+
+    #[test]
+    fn test_checkresult_ok() {
+        let result = CheckResult::ok("test message");
+        assert!(matches!(result.status, Status::Ok));
+        assert_eq!(result.message, "test message");
+    }
+
+    #[test]
+    fn test_checkresult_warn() {
+        let result = CheckResult::warn("warning message");
+        assert!(matches!(result.status, Status::Warn));
+        assert_eq!(result.message, "warning message");
+    }
+
+    #[test]
+    fn test_checkresult_error() {
+        let result = CheckResult::error("error message");
+        assert!(matches!(result.status, Status::Error));
+        assert_eq!(result.message, "error message");
+    }
+
+    #[test]
+    fn test_report_all_ok() {
+        let report = Report {
+            sway_result: CheckResult::ok("ok"),
+            pipewire_result: CheckResult::ok("ok"),
+            gstreamer_result: CheckResult::ok("ok"),
+            network_manager_result: CheckResult::ok("ok"),
+            wpa_supplicant_result: CheckResult::ok("ok"),
+            xdg_desktop_portal_result: CheckResult::ok("ok"),
+        };
+        assert!(report.all_ok());
+    }
+
+    #[test]
+    fn test_report_not_all_ok_with_error() {
+        let report = Report {
+            sway_result: CheckResult::error("error"),
+            pipewire_result: CheckResult::ok("ok"),
+            gstreamer_result: CheckResult::ok("ok"),
+            network_manager_result: CheckResult::ok("ok"),
+            wpa_supplicant_result: CheckResult::ok("ok"),
+            xdg_desktop_portal_result: CheckResult::ok("ok"),
+        };
+        assert!(!report.all_ok());
+    }
+
+    #[test]
+    fn test_report_not_all_ok_with_warn() {
+        let report = Report {
+            sway_result: CheckResult::warn("warn"),
+            pipewire_result: CheckResult::ok("ok"),
+            gstreamer_result: CheckResult::ok("ok"),
+            network_manager_result: CheckResult::ok("ok"),
+            wpa_supplicant_result: CheckResult::ok("ok"),
+            xdg_desktop_portal_result: CheckResult::ok("ok"),
+        };
+        assert!(!report.all_ok());
+    }
+
+    #[test]
+    fn test_check_all_returns_report() {
+        let result = check_all();
+        assert!(result.is_ok());
+        let report = result.unwrap();
+        assert!(!report.sway_result.message.is_empty());
+        assert!(!report.pipewire_result.message.is_empty());
+        assert!(!report.gstreamer_result.message.is_empty());
+        assert!(!report.network_manager_result.message.is_empty());
+        assert!(!report.wpa_supplicant_result.message.is_empty());
+        assert!(!report.xdg_desktop_portal_result.message.is_empty());
     }
 }

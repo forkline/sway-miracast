@@ -198,3 +198,143 @@ impl StreamPipeline {
         todo!("Stop GStreamer pipeline");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_video_codec_display() {
+        assert_eq!(VideoCodec::H264.to_string(), "H264");
+    }
+
+    #[test]
+    fn test_audio_codec_display() {
+        assert_eq!(AudioCodec::AAC.to_string(), "AAC");
+        assert_eq!(AudioCodec::LPCM.to_string(), "LPCM");
+    }
+
+    #[test]
+    fn test_stream_config_default() {
+        let config = StreamConfig::default();
+        assert_eq!(config.video_codec, VideoCodec::H264);
+        assert_eq!(config.audio_codec, AudioCodec::AAC);
+        assert_eq!(config.video_bitrate, 8_000_000);
+        assert_eq!(config.video_width, 1920);
+        assert_eq!(config.video_height, 1080);
+        assert_eq!(config.video_framerate, 30);
+        assert_eq!(config.audio_bitrate, 128_000);
+        assert_eq!(config.audio_sample_rate, 48000);
+        assert_eq!(config.audio_channels, 2);
+    }
+
+    #[test]
+    fn test_stream_config_custom() {
+        let config = StreamConfig {
+            video_codec: VideoCodec::H264,
+            audio_codec: AudioCodec::LPCM,
+            video_bitrate: 10_000_000,
+            video_width: 1280,
+            video_height: 720,
+            video_framerate: 60,
+            audio_bitrate: 256_000,
+            audio_sample_rate: 44100,
+            audio_channels: 1,
+        };
+        assert_eq!(config.video_width, 1280);
+        assert_eq!(config.video_framerate, 60);
+        assert_eq!(config.audio_channels, 1);
+    }
+
+    #[test]
+    fn test_stream_pipeline_new_success() {
+        let config = StreamConfig::default();
+        let result = StreamPipeline::new(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stream_pipeline_set_input_valid() {
+        let config = StreamConfig::default();
+        let mut pipeline = StreamPipeline::new(config).unwrap();
+        let result = pipeline.set_input(42);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stream_pipeline_set_input_negative_fd() {
+        let config = StreamConfig::default();
+        let mut pipeline = StreamPipeline::new(config).unwrap();
+        let result = pipeline.set_input(-1);
+        assert!(result.is_err());
+        match result {
+            Err(StreamError::InputSetup(msg)) => {
+                assert!(msg.contains("Invalid PipeWire FD"));
+            }
+            _ => panic!("Expected InputSetup error"),
+        }
+    }
+
+    #[test]
+    fn test_stream_pipeline_set_output_valid() {
+        let config = StreamConfig::default();
+        let mut pipeline = StreamPipeline::new(config).unwrap();
+        let result = pipeline.set_output("192.168.1.1", 5004);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stream_pipeline_set_output_empty_host() {
+        let config = StreamConfig::default();
+        let mut pipeline = StreamPipeline::new(config).unwrap();
+        let result = pipeline.set_output("", 5004);
+        assert!(result.is_err());
+        match result {
+            Err(StreamError::InvalidConfiguration(msg)) => {
+                assert!(msg.contains("Host cannot be empty"));
+            }
+            _ => panic!("Expected InvalidConfiguration error"),
+        }
+    }
+
+    #[test]
+    fn test_stream_pipeline_set_output_zero_port() {
+        let config = StreamConfig::default();
+        let mut pipeline = StreamPipeline::new(config).unwrap();
+        let result = pipeline.set_output("192.168.1.1", 0);
+        assert!(result.is_err());
+        match result {
+            Err(StreamError::InvalidConfiguration(msg)) => {
+                assert!(msg.contains("Port cannot be zero"));
+            }
+            _ => panic!("Expected InvalidConfiguration error"),
+        }
+    }
+
+    #[test]
+    fn test_stream_error_display() {
+        let err = StreamError::GstInit("test".to_string());
+        assert!(err.to_string().contains("GStreamer initialization error"));
+
+        let err = StreamError::InputSetup("test".to_string());
+        assert!(err.to_string().contains("Input setup error"));
+
+        let err = StreamError::OutputSetup("test".to_string());
+        assert!(err.to_string().contains("Output setup error"));
+    }
+
+    #[test]
+    fn test_stream_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "test");
+        let stream_err: StreamError = io_err.into();
+        assert!(matches!(stream_err, StreamError::Io(_)));
+    }
+
+    #[test]
+    fn test_pipeline_state_variants() {
+        assert_eq!(PipelineState::Null, PipelineState::Null);
+        assert_eq!(PipelineState::Ready, PipelineState::Ready);
+        assert_eq!(PipelineState::Paused, PipelineState::Paused);
+        assert_eq!(PipelineState::Playing, PipelineState::Playing);
+    }
+}

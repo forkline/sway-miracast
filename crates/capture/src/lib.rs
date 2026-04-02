@@ -87,3 +87,94 @@ impl Capture {
         &self.config
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capture_config_default() {
+        let config = CaptureConfig::default();
+        assert_eq!(config.width, 1920);
+        assert_eq!(config.height, 1080);
+        assert_eq!(config.framerate, 30);
+        assert!(config.cursor_visible);
+    }
+
+    #[test]
+    fn test_capture_config_validation() {
+        let config = CaptureConfig {
+            width: 1920,
+            height: 1080,
+            framerate: 30,
+            cursor_visible: true,
+        };
+        let result = Capture::new(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_capture_config_zero_width() {
+        let config = CaptureConfig {
+            width: 0,
+            height: 1080,
+            framerate: 30,
+            cursor_visible: true,
+        };
+        let result = Capture::new(config);
+        assert!(result.is_err());
+        match result {
+            Err(CaptureError::InvalidConfig(msg)) => {
+                assert!(msg.contains("Width and height"));
+            }
+            _ => panic!("Expected InvalidConfig error"),
+        }
+    }
+
+    #[test]
+    fn test_capture_config_zero_height() {
+        let config = CaptureConfig {
+            width: 1920,
+            height: 0,
+            framerate: 30,
+            cursor_visible: true,
+        };
+        let result = Capture::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_capture_new_success() {
+        let config = CaptureConfig::default();
+        let capture = Capture::new(config).unwrap();
+        assert_eq!(capture.config().width, 1920);
+        assert_eq!(capture.config().height, 1080);
+    }
+
+    #[test]
+    fn test_capture_config_accessor() {
+        let config = CaptureConfig {
+            width: 1280,
+            height: 720,
+            framerate: 60,
+            cursor_visible: false,
+        };
+        let capture = Capture::new(config).unwrap();
+        assert_eq!(capture.config().width, 1280);
+        assert_eq!(capture.config().height, 720);
+        assert_eq!(capture.config().framerate, 60);
+        assert!(!capture.config().cursor_visible);
+    }
+
+    #[test]
+    fn test_capture_error_display() {
+        let err = CaptureError::InitializationFailed("test".to_string());
+        assert!(err.to_string().contains("Initialization failed"));
+
+        let err = CaptureError::StartFailed("test".to_string());
+        assert!(err.to_string().contains("Failed to start"));
+
+        let err = CaptureError::InvalidConfig("test".to_string());
+        assert!(err.to_string().contains("Invalid configuration"));
+    }
+}
