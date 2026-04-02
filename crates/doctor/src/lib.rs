@@ -72,6 +72,13 @@ impl Report {
             println!("\n✓ All checks passed! Your system is ready for Miracast.");
         } else {
             println!("\n✗ Some checks failed. Please review the issues above.");
+            println!("\nRequirements for Miracast:");
+            println!("  - WiFi adapter with P2P (Wi-Fi Direct) support");
+            println!("  - Sway or wlroots-based compositor");
+            println!("  - PipeWire for audio/video");
+            println!("  - GStreamer with H.264/H.265 plugins");
+            println!("  - NetworkManager for P2P connection management");
+            println!("  - xdg-desktop-portal for screen capture");
         }
     }
 
@@ -97,22 +104,46 @@ pub fn check_all() -> anyhow::Result<Report> {
 }
 
 pub fn check_sway() -> anyhow::Result<CheckResult> {
+    // Check for Wayland session
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").ok();
+
     if std::env::var("SWAYSOCK").is_ok() {
         // Check if swaymsg command works to confirm actual sway session
-        match Command::new("swaymsg").arg("-t").arg("get_version").output() {
-            Ok(output) if output.status.success() => Ok(CheckResult::ok("Running under Sway compositor")),
-            _ => Ok(CheckResult::error("SWAYSOCK environment variable is set, but swaymsg failed - possibly not running under Sway")),
+        match Command::new("swaymsg")
+            .arg("-t")
+            .arg("get_version")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                Ok(CheckResult::ok("Running under Sway compositor"))
+            }
+            _ => Ok(CheckResult::warn("SWAYSOCK set but swaymsg failed")),
         }
+    } else if wayland_display.is_some() || xdg_session_type.as_deref() == Some("wayland") {
+        // Running Wayland but not Sway - check for other wlroots compositors
+        let compositors = ["sway", "river", "labwc", "hyprland", "wayfire"];
+        for compositor in compositors {
+            let output = Command::new("pgrep").arg(compositor).output();
+            if let Ok(o) = output {
+                if o.status.success() && !o.stdout.is_empty() {
+                    return Ok(CheckResult::ok(&format!(
+                        "Running under {} (wlroots-compatible)",
+                        compositor
+                    )));
+                }
+            }
+        }
+
+        // Wayland session but unknown compositor
+        Ok(CheckResult::warn(
+            "Wayland session detected but compositor unknown - may or may not work with xdg-desktop-portal-wlr",
+        ))
     } else {
-        // Try to detect sway process
-        match Command::new("pgrep").arg("sway").output() {
-            Ok(output) if output.status.success() && !output.stdout.is_empty() => Ok(
-                CheckResult::warn("SWAYSOCK not set, but sway process detected"),
-            ),
-            _ => Ok(CheckResult::error(
-                "Not running under Sway compositor - SWAYSOCK not set and sway process not found",
-            )),
-        }
+        // Not Wayland
+        Ok(CheckResult::error(
+            "Not running a Wayland compositor - Miracast requires Sway or another wlroots-based compositor",
+        ))
     }
 }
 
@@ -164,40 +195,58 @@ pub fn check_gstreamer() -> anyhow::Result<CheckResult> {
 
     match output {
         Ok(o) if o.status.success() => {
-            // Now check for required plugins for H.264, H.265, and AV1
-            let plugins_needed = [
-                "x264",       // H.264 encoding
-                "x265",       // H.265 encoding (for 4K)
-                "h264parse",  // H.264 parsing
-                "h265parse",  // H.265 parsing
-                "rtph264pay", // H.264 RTP payloader
-                "rtph265pay", // H.265 RTP payloader
-                "av1parse",   // AV1 parsing
-                "rtpav1pay",  // AV1 RTP payloader
-                "svtav1enc",  // SVT-AV1 encoder
-            ];
-            let mut missing = Vec::new();
+            // Required: H.264 (universally supported by Miracast TVs)
+            let required_plugins = ["x264", "h264parse", "rtph264pay"];
+            let mut missing_required = Vec::new();
 
-            for plugin in plugins_needed.iter() {
+            for plugin in required_plugins.iter() {
                 let result = Command::new("gst-inspect-1.0").arg(plugin).output();
-
-                match result {
-                    Ok(o) if o.status.success() => continue,
-                    _ => missing.push(*plugin),
+                if !matches!(result, Ok(o) if o.status.success()) {
+                    missing_required.push(*plugin);
                 }
             }
 
-            if missing.is_empty() {
-                Ok(CheckResult::ok(
-                    "GStreamer and required encoding plugins (H.264, H.265, AV1) found",
-                ))
-            } else {
-                let msg = format!(
-                    "GStreamer available but missing required encoding plugins: {}",
-                    missing.join(", ")
-                );
-                Ok(CheckResult::error(&msg))
+            if !missing_required.is_empty() {
+                return Ok(CheckResult::error(&format!(
+                    "Missing required H.264 plugins: {} (install gstreamer-plugins-ugly)",
+                    missing_required.join(", ")
+                )));
             }
+
+            // Optional: H.265 (better for 4K)
+            let h265_plugins = ["x265", "h265parse", "rtph265pay"];
+            let mut missing_h265 = Vec::new();
+            for plugin in h265_plugins.iter() {
+                let result = Command::new("gst-inspect-1.0").arg(plugin).output();
+                if !matches!(result, Ok(o) if o.status.success()) {
+                    missing_h265.push(*plugin);
+                }
+            }
+
+            // Optional: AV1 (future-proof)
+            let av1_available = Command::new("gst-inspect-1.0")
+                .arg("svtav1enc")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+
+            // Build result message
+            let mut message = String::from("H.264 ready");
+
+            if missing_h265.is_empty() {
+                message.push_str(", H.265/4K ready");
+            } else {
+                message.push_str(&format!(
+                    ", H.265 missing: {} (optional, for 4K)",
+                    missing_h265.join(", ")
+                ));
+            }
+
+            if av1_available {
+                message.push_str(", AV1 ready");
+            }
+
+            Ok(CheckResult::ok(&message))
         }
         _ => Ok(CheckResult::error(
             "GStreamer not installed or gst-inspect-1.0 command not found",
@@ -250,6 +299,15 @@ pub fn check_network_manager() -> anyhow::Result<CheckResult> {
 }
 
 pub fn check_wpa_supplicant() -> anyhow::Result<CheckResult> {
+    // First check if we have any WiFi hardware
+    let wifi_hardware = check_wifi_hardware()?;
+
+    if !wifi_hardware {
+        return Ok(CheckResult::error(
+            "No WiFi hardware detected - Miracast requires WiFi with P2P support",
+        ));
+    }
+
     // Check if wpa_supplicant is running
     let output = Command::new("pgrep").arg("wpa_supplicant").output();
 
@@ -258,18 +316,65 @@ pub fn check_wpa_supplicant() -> anyhow::Result<CheckResult> {
             Ok(CheckResult::ok("wpa_supplicant daemon running"))
         }
         _ => {
+            // Check if NetworkManager handles P2P internally (newer versions do)
+            let nm_p2p = Command::new("nmcli")
+                .args(["-f", "WIFI-P2P", "general", "status"])
+                .output();
+
+            if let Ok(output) = nm_p2p {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if stdout.contains("enabled") || stdout.contains("available") {
+                    return Ok(CheckResult::ok("NetworkManager P2P support available"));
+                }
+            }
+
             // Check wpa_supplicant binary availability as fallback
             let cmd = Command::new("wpa_supplicant").arg("--version").output();
             match cmd {
                 Ok(c) if c.status.success() => Ok(CheckResult::warn(
-                    "wpa_supplicant binary found but not running (needed for Miracast P2P)",
+                    "wpa_supplicant installed but not running. Start with: sudo systemctl start wpa_supplicant",
                 )),
                 _ => Ok(CheckResult::error(
-                    "wpa_supplicant not installed or not accessible",
+                    "wpa_supplicant not installed. Install: sudo pacman -S wpa_supplicant",
                 )),
             }
         }
     }
+}
+
+fn check_wifi_hardware() -> anyhow::Result<bool> {
+    // Check for wireless interfaces
+    let output = Command::new("ip").args(["link", "show"]).output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Look for wireless interfaces (wl*, wlan*)
+    let has_wifi = stdout
+        .lines()
+        .any(|line| line.contains("wl") || line.contains("wlan"));
+
+    if has_wifi {
+        return Ok(true);
+    }
+
+    // Also check via /sys/class/net for wireless
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("wl") || name_str.starts_with("wlan") {
+                return Ok(true);
+            }
+
+            // Check if device has wireless extensions
+            let phy80211 = entry.path().join("phy80211");
+            if phy80211.exists() {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
