@@ -239,6 +239,15 @@ pub fn parse_wfd_client_rtp_port(value: &str) -> Option<u16> {
     }
 }
 
+/// Parse the advertised HDCP control port from `wfd_content_protection`.
+pub fn parse_wfd_content_protection_port(value: &str) -> Option<u16> {
+    value.split_whitespace().find_map(|part| {
+        part.strip_prefix("port=")
+            .and_then(|port| port.parse::<u16>().ok())
+            .filter(|port| *port != 0)
+    })
+}
+
 /// Represents the current state of an RTSP/WFD session
 ///
 /// The state machine drives the negotiation process between Miracast source and sink,

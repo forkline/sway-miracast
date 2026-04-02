@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::RwLock;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
@@ -9,7 +10,8 @@ use swaybeam_capture::Capture;
 use swaybeam_doctor::{check_all, Report as DoctorReport};
 use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
 use swaybeam_rtsp::{
-    parse_wfd_client_rtp_port, NegotiatedCodec, RtspClient, RtspServer, SetupResult,
+    parse_wfd_client_rtp_port, parse_wfd_content_protection_port, NegotiatedCodec, RtspClient,
+    RtspServer, SetupResult,
 };
 use swaybeam_stream::{
     AudioCodec, StreamConfig, StreamPipeline, TestPatternConfig, TestPatternGenerator, VideoCodec,
@@ -58,6 +60,7 @@ pub struct Daemon {
     config: DaemonConfig,
     capture: Option<Capture>,
     stream: Option<StreamPipeline>,
+    hdcp_stream: Option<TcpStream>,
     connection: Option<P2pConnection>,
     rtsp_server: Option<RtspServer>,
     event_tx: mpsc::UnboundedSender<DaemonEvent>,
@@ -89,6 +92,7 @@ impl Daemon {
             config,
             capture: None,
             stream: None,
+            hdcp_stream: None,
             connection: None,
             rtsp_server: None,
             event_tx,
@@ -264,6 +268,7 @@ impl Daemon {
 
     pub async fn stop_stream(&mut self) -> anyhow::Result<()> {
         self.stream = None;
+        self.hdcp_stream = None;
         info!("Streaming stopped");
         self.event_tx.send(DaemonEvent::StreamingStopped).ok();
         Ok(())
@@ -273,6 +278,7 @@ impl Daemon {
         *self.state.write() = DaemonState::Disconnecting;
 
         if let Some(conn) = self.connection.take() {
+            self.hdcp_stream = None;
             let config = P2pConfig {
                 interface_name: self.config.interface.clone(),
                 group_name: "swaybeam".to_string(),
@@ -455,6 +461,22 @@ impl Daemon {
             .get("wfd_client_rtp_ports")
             .and_then(|value| parse_wfd_client_rtp_port(value))
         {
+            let local_ip = self
+                .connection
+                .as_ref()
+                .and_then(|conn| conn.get_sink().ip_address.clone());
+            self.hdcp_stream = self
+                .try_connect_hdcp(
+                    go_ip,
+                    sink_caps
+                        .get("wfd_content_protection")
+                        .and_then(|value| parse_wfd_content_protection_port(value)),
+                    local_ip.as_deref(),
+                )
+                .await;
+            if let Some(ref hdcp_stream) = self.hdcp_stream {
+                self.probe_hdcp_socket(hdcp_stream).await;
+            }
             let session_id = rtsp_client.adopt_peer_session().to_string();
             info!(
                 "Using sink-advertised RTP destination {}:{} for reverse RTSP mode with session {}",
@@ -492,6 +514,103 @@ impl Daemon {
         info!("Stream pipeline configured in reverse RTSP mode");
 
         Ok(())
+    }
+
+    async fn try_connect_hdcp(
+        &self,
+        sink_ip: &str,
+        hdcp_port: Option<u16>,
+        local_ip: Option<&str>,
+    ) -> Option<TcpStream> {
+        let hdcp_port = hdcp_port?;
+        let remote_ip: std::net::IpAddr = match sink_ip.parse() {
+            Ok(ip) => ip,
+            Err(err) => {
+                tracing::warn!("Invalid HDCP sink IP {}: {}", sink_ip, err);
+                return None;
+            }
+        };
+        let remote_addr = std::net::SocketAddr::new(remote_ip, hdcp_port);
+
+        let local_ip = match local_ip {
+            Some(local_ip) => match local_ip.parse::<std::net::IpAddr>() {
+                Ok(local_ip) => Some(local_ip),
+                Err(err) => {
+                    tracing::warn!("Invalid local HDCP bind IP {}: {}", local_ip, err);
+                    return None;
+                }
+            },
+            None => None,
+        };
+
+        for attempt in 1..=10 {
+            let stream_result = if let Some(local_ip) = local_ip {
+                let bind_addr = std::net::SocketAddr::new(local_ip, 0);
+                let socket = match remote_ip {
+                    std::net::IpAddr::V4(_) => TcpSocket::new_v4().ok()?,
+                    std::net::IpAddr::V6(_) => TcpSocket::new_v6().ok()?,
+                };
+                if let Err(err) = socket.bind(bind_addr) {
+                    tracing::warn!("Failed to bind HDCP socket to {}: {}", bind_addr, err);
+                    return None;
+                }
+                socket.connect(remote_addr).await
+            } else {
+                TcpStream::connect(remote_addr).await
+            };
+
+            match stream_result {
+                Ok(stream) => {
+                    info!(
+                        "Connected best-effort HDCP control socket to {}",
+                        remote_addr
+                    );
+                    return Some(stream);
+                }
+                Err(err) if attempt < 10 => {
+                    tracing::debug!(
+                        "HDCP connect attempt {} to {} failed: {}",
+                        attempt,
+                        remote_addr,
+                        err
+                    );
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Failed to connect HDCP control socket to {} after retries: {}",
+                        remote_addr,
+                        err
+                    );
+                }
+            }
+        }
+
+        None
+    }
+
+    async fn probe_hdcp_socket(&self, hdcp_stream: &TcpStream) {
+        let mut buffer = [0u8; 32];
+        match tokio::time::timeout(Duration::from_millis(500), hdcp_stream.peek(&mut buffer)).await
+        {
+            Ok(Ok(bytes)) if bytes > 0 => {
+                let preview = buffer[..bytes]
+                    .iter()
+                    .map(|byte| format!("{:02x}", byte))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                info!("HDCP socket has {} pending bytes: {}", bytes, preview);
+            }
+            Ok(Ok(_)) => {
+                debug!("HDCP socket connected but no data available yet");
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("Failed to peek HDCP socket: {}", err);
+            }
+            Err(_) => {
+                debug!("HDCP socket probe timed out without data");
+            }
+        }
     }
 
     async fn negotiate_with_rtsp_client(
@@ -553,7 +672,13 @@ impl Daemon {
             "wfd_standby_resume_capability".to_string(),
             "none".to_string(),
         );
-        source_caps.insert("wfd_content_protection".to_string(), "none".to_string());
+        source_caps.insert(
+            "wfd_content_protection".to_string(),
+            sink_caps
+                .get("wfd_content_protection")
+                .cloned()
+                .unwrap_or_else(|| "none".to_string()),
+        );
         source_caps.insert("wfd_coupled_sink".to_string(), "none".to_string());
 
         rtsp_client.send_set_parameter(&source_caps).await?;

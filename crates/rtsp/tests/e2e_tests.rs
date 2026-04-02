@@ -6,8 +6,8 @@ mod mock_lg_tv;
 use mock_lg_tv::*;
 use std::time::Duration;
 use swaybeam_rtsp::{
-    parse_wfd_client_rtp_port, RtspClient, RtspMessage, RtspServer, RtspSession, SessionState,
-    WfdCapabilities,
+    parse_wfd_client_rtp_port, parse_wfd_content_protection_port, RtspClient, RtspMessage,
+    RtspServer, RtspSession, SessionState, WfdCapabilities,
 };
 
 /// Test WFD Device Information IE format
@@ -402,4 +402,13 @@ fn test_parse_wfd_client_rtp_ports() {
         None
     );
     assert_eq!(parse_wfd_client_rtp_port("invalid"), None);
+}
+
+#[test]
+fn test_parse_wfd_content_protection_port() {
+    assert_eq!(
+        parse_wfd_content_protection_port("HDCP2.1 port=53002"),
+        Some(53002)
+    );
+    assert_eq!(parse_wfd_content_protection_port("none"), None);
 }
