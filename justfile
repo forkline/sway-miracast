@@ -34,6 +34,14 @@ test-doc: build
 # Run all tests including integration
 test-all: test test-integration
 
+# Run validation suite (protocol compliance + simulation)
+test-validation:
+    @./scripts/test-validation.sh
+
+# Run mock sink server for testing
+mock-sink:
+    cargo run --example mock_sink_server
+
 # Format code
 fmt:
     cargo fmt
