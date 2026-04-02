@@ -51,8 +51,6 @@ All code should include:
 Run tests with:
 ```bash
 just test
-# or
-cargo test --workspace
 ```
 
 ### 4. Before Submitting Changes
@@ -80,31 +78,27 @@ just pre-commit    # Pre-commit hooks
 # Create feature branch
 git checkout -b feat/my-feature
 
-# Make changes and test
-just test
+# Development workflow (lint-fix, test, build)
+just dev
 
-# Run linting
-just lint-fix
+# Quick check (lint and build, no tests)
+just check
 ```
 
 ### Running Examples
 
 ```bash
-# System diagnostics
-cargo run --example check_system -p swaybeam-doctor
-
-# P2P discovery
-cargo run --example discover_and_connect -p swaybeam-net
-
-# RTSP server
-cargo run --example basic_server -p swaybeam-rtsp
+just example-doctor  # System diagnostics
+just example-net     # P2P discovery
+just example-rtsp    # RTSP server
 ```
 
 ### Debugging
 
 Enable debug logging:
 ```bash
-RUST_LOG=debug cargo run --example check_system -p swaybeam-doctor
+just debug doctor
+just debug daemon
 ```
 
 ## Common Tasks
@@ -151,7 +145,7 @@ RUST_LOG=debug cargo run --example check_system -p swaybeam-doctor
 
 Before submitting PR:
 - [ ] All tests pass: `just test`
-- [ ] No clippy warnings: `just clippy`
+- [ ] No lint warnings: `just lint`
 - [ ] Code formatted: `just fmt`
 - [ ] Documentation updated
 - [ ] CHANGELOG.md updated (if significant change)
@@ -162,26 +156,21 @@ Before submitting PR:
 ### Build Errors
 
 ```bash
-# Clean and rebuild
 just clean
-cargo build
+just build
 ```
 
 ### Test Failures
 
 ```bash
-# Run with verbose output
-cargo test -- --nocapture
-
-# Run specific test
-cargo test test_name -- --nocapture
+just test-verbose
+just test-integration
 ```
 
 ### Clippy Warnings
 
 ```bash
-# Auto-fix what's possible
-just clippy-fix
+just lint-fix
 ```
 
 ## Architecture Notes

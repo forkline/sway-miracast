@@ -7,17 +7,21 @@ Stream your screen wirelessly to Miracast-compatible TVs and displays from Sway,
 ## Quick Start
 
 ```bash
-# 1. Clone and build
+# Clone repository
 git clone https://github.com/forkline/swaybeam.git
 cd swaybeam
-cargo build --release
 
-# 2. Check if your system is ready
-./target/release/swaybeam doctor
+# Build
+just build
 
-# 3. Run the daemon (when all checks pass)
-./target/release/swaybeam daemon
+# Check system readiness
+just doctor
+
+# Run daemon (when all checks pass)
+just daemon
 ```
+
+> **Tip**: Run `just --list` to see all available commands.
 
 ## Requirements
 
@@ -26,9 +30,10 @@ cargo build --release
 | Sway/River/Labwc/Hyprland | wlroots-based Wayland compositor | `sway` / `river` / `labwc` / `hyprland` |
 | WiFi adapter with P2P | Wi-Fi Direct for Miracast | Hardware |
 | PipeWire | Audio/video handling | `pipewire wireplumber` |
-| GStreamer | H.264/H.265 encoding | `gst-plugins-ugly` |
+| GStreamer | H.264/H.265 encoding | `gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly` |
 | NetworkManager | P2P connection management | `networkmanager` |
 | xdg-desktop-portal-wlr | Screen capture | `xdg-desktop-portal-wlr` |
+| just | Command runner (optional) | `just` |
 
 ## Installation
 
@@ -41,13 +46,11 @@ sudo pacman -S --needed \
     pipewire wireplumber networkmanager wpa_supplicant \
     xdg-desktop-portal xdg-desktop-portal-wlr
 
-# Build
+# Build and install
 git clone https://github.com/forkline/swaybeam.git
 cd swaybeam
-cargo build --release
-
-# Install (optional)
-sudo cp target/release/swaybeam /usr/local/bin/
+just build
+just install
 ```
 
 ### Ubuntu/Debian
@@ -59,7 +62,9 @@ sudo apt install \
     pipewire wireplumber network-manager wpa_supplicant \
     xdg-desktop-portal-wlr
 
-cargo build --release
+git clone https://github.com/forkline/swaybeam.git
+cd swaybeam
+just build
 ```
 
 ## Usage
@@ -150,18 +155,23 @@ H.265 is automatically used for 4K streaming. H.264 is used for 1080p for maximu
 ## Development
 
 ```bash
+# Setup development environment
+just setup
+
+# Development workflow (lint-fix, test, build)
+just dev
+
 # Run tests
-cargo test
-
-# Run linter
-cargo clippy
-
-# Format code
-cargo fmt
+just test
 
 # Run with debug logging
-RUST_LOG=debug cargo run -- daemon
+just debug daemon
+
+# Quick check (lint and build, no tests)
+just check
 ```
+
+See `just --list` for all available commands.
 
 ## Troubleshooting
 
