@@ -7,6 +7,18 @@ edition.workspace = true
 name = "swaybeam"
 path = "src/main.rs"
 
+[[bin]]
+name = "validate-rtsp"
+path = "src/bin/validate-rtsp.rs"
+
+[[bin]]
+name = "validate-wfd"
+path = "src/bin/validate-wfd.rs"
+
+[[bin]]
+name = "diagnose-session"
+path = "src/bin/diagnose-session.rs"
+
 [dependencies]
 swaybeam-daemon = { path = "../daemon" }
 swaybeam-net = { path = "../net" }
@@ -20,4 +32,6 @@ tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 clap = { version = "4.0", features = ["derive"] }
 tabled = "0.15"
+serde = { workspace = true }
 serde_json = { workspace = true }
+regex-lite = "0.1"
