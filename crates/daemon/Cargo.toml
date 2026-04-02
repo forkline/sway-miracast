@@ -11,10 +11,10 @@ swaybeam-net = { path = "../net" }
 swaybeam-rtsp = { path = "../rtsp" }
 anyhow.workspace = true
 tracing.workspace = true
-tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "sync", "time", "signal"] }
 parking_lot.workspace = true
+gstreamer.workspace = true
 
 [dev-dependencies]
 pipewire.workspace = true
-gstreamer.workspace = true
 zbus.workspace = true

@@ -116,6 +116,11 @@ impl WfdCapabilities {
                 self.standby_resume_capability = Some(value.to_string())
             }
             "wfd_content_protection" => self.content_protection = Some(value.to_string()),
+            // Handle standard capabilities even with underscores missing
+            "wfd_video_format" => self.video_formats = Some(value.to_string()),
+            "wfd_audio_codec" => self.audio_codecs = Some(value.to_string()),
+            "wfd_client_rtp_port" => self.client_rtp_ports = Some(value.to_string()),
+            "wfd_uibc_capabilit" => self.uibc_capability = Some(value.to_string()),
             _ => return Err(RtspError::InvalidParameter(param_name.to_string())),
         }
         Ok(())
@@ -155,6 +160,11 @@ impl WfdCapabilities {
             "wfd_uibc_capability" => Ok(self.uibc_capability.as_deref()),
             "wfd_standby_resume_capability" => Ok(self.standby_resume_capability.as_deref()),
             "wfd_content_protection" => Ok(self.content_protection.as_deref()),
+            // For compatibility with different TV implementations
+            "wfd_video_format" => Ok(self.video_formats.as_deref()), // Variant without 's'
+            "wfd_audio_codec" => Ok(self.audio_codecs.as_deref()),   // Variant without 's'
+            "wfd_client_rtp_port" => Ok(self.client_rtp_ports.as_deref()), // Variant without 's'
+            "wfd_uibc_capabilit" => Ok(self.uibc_capability.as_deref()), // Truncated version
             _ => Err(RtspError::InvalidParameter(param_name.to_string())),
         }
     }
@@ -165,44 +175,24 @@ impl WfdCapabilities {
     pub fn negotiate_video_codec(&self) -> NegotiatedCodec {
         // Parse video_formats to determine supported codecs
         if let Some(formats) = &self.video_formats {
-            // H.265 has better support in modern 4K TVs - check first
-            if self.supports_h265(formats) {
-                return NegotiatedCodec::H265;
-            }
-            // H.264 is universally supported
-            if self.supports_h264(formats) {
-                return NegotiatedCodec::H264;
+            // Format is space-separated string like "01 01 00 000000000000001F"
+            // The last component is the formats mask
+            let components: Vec<&str> = formats.split_whitespace().collect();
+            if components.len() >= 4 {
+                if let Ok(mask) = u64::from_str_radix(components[3], 16) {
+                    // Check for H.265 support (typically bit 4, 0x10)
+                    if (mask & 0x0000000000000010) != 0 {
+                        return NegotiatedCodec::H265;
+                    }
+                    // Check for H.264 support (bits 0, 1, 2 for baseline, main, high)
+                    if (mask & 0x0000000000000007) != 0 {
+                        return NegotiatedCodec::H264;
+                    }
+                }
             }
         }
         // Default to H.264
         NegotiatedCodec::H264
-    }
-
-    fn supports_h264(&self, formats: &str) -> bool {
-        // H.264 is indicated by specific bits in the format string
-        // Standard Miracast always supports H.264
-        formats.contains("00") || formats.contains("01") || formats.contains("02")
-    }
-
-    fn supports_h265(&self, formats: &str) -> bool {
-        // H.265 support is indicated in extended WFD
-        // Check for H.265 indicator in format string
-        formats.contains("HEVC") || formats.contains("hevc") || self.has_hevc_flag(formats)
-    }
-
-    fn has_hevc_flag(&self, formats: &str) -> bool {
-        // Parse hex format for HEVC indicator
-        // Extended WFD uses specific bit patterns
-        let parts: Vec<&str> = formats.split_whitespace().collect();
-        if parts.len() >= 4 {
-            // Check video formats bitmask (typically the last component)
-            if let Ok(mask) = u64::from_str_radix(parts[3], 16) {
-                // H.265 is bit 4 in the lower bits (0x10)
-                // 000000000000001F would mean bits 0:4 are set (H264 + some H265)
-                return (mask & 0x0000000000000010) != 0; // Check bit 4 for H.265
-            }
-        }
-        false
     }
 
     /// Create source capabilities advertising all supported codecs
@@ -210,42 +200,27 @@ impl WfdCapabilities {
         WfdCapabilities {
             video_formats: Some(Self::build_video_formats()),
             audio_codecs: Some(Self::build_audio_codecs()),
+            client_rtp_ports: Some("RTP/UDP".to_string()), // Placeholder for setup
+            uibc_capability: Some("none".to_string()),     // No UIBC by default
+            standby_resume_capability: Some("none".to_string()), // No standby resume
             ..Default::default()
         }
     }
 
     fn build_video_formats() -> String {
-        // Build WFD video formats string advertising H.264, H.265, AV1
-        // Format: "01 02 10 0000000000000000" (example)
-        // Version 01, preferred display mode 02 (native), UIBC 10
-        // Video formats: bitmask of supported codecs
-        format!("01 01 00 {:016X}", Self::supported_codecs_mask())
-    }
-
-    fn supported_codecs_mask() -> u64 {
-        // Bitmask of all supported video codecs
-        // H.264: bits 0-3 (all profiles)
-        // H.265: bits 4-7 (if supported)
-        // AV1: bits 8-11 (if supported, extension)
-        let mut mask: u64 = 0;
-
-        // H.264 baseline, main, high profiles
-        mask |= 0x0001; // H.264 baseline
-        mask |= 0x0002; // H.264 main
-        mask |= 0x0004; // H.264 high
-
-        // H.265 main profile
-        mask |= 0x0010; // H.265 main
-
-        // AV1 (extended WFD, may not be standard)
-        // mask |= 0x0100; // AV1
-
-        mask
+        // Build WFD video formats string advertising H.264 for maximum compatibility
+        // Format: "version preferred-display-mode uibc-capability video-formats"
+        // Version = 01 (WFD Version 1.0.0)
+        // Preferred display mode = 01 (non-native display on, native display off)
+        // UIBC = 00 (none)
+        // Video formats: bit 0: baseline, 1: main, 2: high profile, 4: H.265
+        // Mask 0000000000000007 supports H.264 profiles, mask 0000000000000017 adds H.265
+        "01 01 00 0000000000000017".to_string()
     }
 
     fn build_audio_codecs() -> String {
-        // AAC is the primary codec, LPCM optional
-        // Format: "AAC 00000001 00 LPCM 00000001 00"
+        // Standard Miracast audio support: AAC multichannel
+        // Format: "codec cap1 cap2" where cap1 is caps bitmap, cap2 is latency
         "AAC 00000001 00".to_string()
     }
 }
@@ -413,13 +388,47 @@ impl RtspSession {
         let mut response = String::new();
 
         for param in params {
+            // If sink has provided capabilities, use those, otherwise provide source capabilities
             let value = self.capabilities.get_parameter(param)?;
-            if let Some(val) = value {
-                // Special handling for video formats to return negotiated codec info
-                if *param == "wfd_video_formats" {
-                    response.push_str(&self.build_video_formats_response());
-                } else {
+            match value {
+                Some(val) => {
                     response.push_str(&format!("{}: {}\r\n", param, val));
+                }
+                _ => {
+                    // When the TV requests parameters and we don't have values from sink, provide source capabilities
+                    match *param {
+                        "wfd_video_formats" => {
+                            response.push_str(&format!(
+                                "wfd_video_formats: {}\r\n",
+                                WfdCapabilities::build_video_formats()
+                            ));
+                        }
+                        "wfd_audio_codecs" => {
+                            response.push_str(&format!(
+                                "wfd_audio_codecs: {}\r\n",
+                                WfdCapabilities::build_audio_codecs()
+                            ));
+                        }
+                        "wfd_uibc_capability" => {
+                            response.push_str("wfd_uibc_capability: none\r\n");
+                        }
+                        "wfd_standby_resume_capability" => {
+                            response.push_str("wfd_standby_resume_capability: none\r\n");
+                        }
+                        "wfd_client_rtp_ports" => {
+                            response.push_str("wfd_client_rtp_ports: RTP/UDP\r\n");
+                        }
+                        "wfd_display_edid" => {
+                            response.push_str("wfd_display_edid: \r\n");
+                        }
+                        "wfd_content_protection" => {
+                            response.push_str("wfd_content_protection: none\r\n");
+                        }
+                        "wfd_coupled_sink" => {
+                            response.push_str("wfd_coupled_sink: none\r\n");
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -458,19 +467,15 @@ impl RtspSession {
         Ok("200 OK\r\n".to_string())
     }
 
-    /// Builds the response for wfd_video_formats parameter based on negotiated codec
+    /// Builds the response for wfd_video_formats parameter based on negotiated codec and TV capabilities
     pub fn build_video_formats_response(&self) -> String {
-        match self.negotiated_codec {
-            Some(NegotiatedCodec::H265) => {
-                "wfd_video_formats: 01 01 00 000000000000001F\r\n".to_string()
-            }
-            Some(NegotiatedCodec::AV1) => {
-                "wfd_video_formats: 01 01 00 0000000000000100\r\n".to_string()
-            }
-            _ => {
-                // H.264 default
-                "wfd_video_formats: 01 01 00 0000000000000007\r\n".to_string()
-            }
+        // Use original parameter if available or provide our capabilities
+        match &self.capabilities.video_formats {
+            Some(formats) => format!("wfd_video_formats: {}\r\n", formats),
+            None => format!(
+                "wfd_video_formats: {}\r\n",
+                WfdCapabilities::build_video_formats()
+            ),
         }
     }
 
@@ -489,8 +494,14 @@ impl RtspSession {
     /// * `Err(RtspError)` - If operation fails
     pub fn process_play(&mut self) -> Result<String, RtspError> {
         self.transition_to(SessionState::Play);
-        // For now, just return a basic play response
-        Ok("RTP-Info: url=rtsp://server.example.com/movie/, seq=123456\r\n".to_string())
+        // Generate an informative response with port information from negotiated parameters
+        let response = if let Some(ports) = &self.capabilities.client_rtp_ports {
+            format!("RTP-Info: url=rtsp://localhost:8554/stream;{}/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n", ports, self.session_id)
+        } else {
+            format!("RTP-Info: url=rtsp://localhost:8554/stream/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n", self.session_id)
+        };
+
+        Ok(response)
     }
 
     /// Processes a TEARDOWN command to end the session
@@ -971,6 +982,9 @@ async fn handle_options(
     let session_id = format!("sess_{}", rand::random::<u64>());
     let mut session = RtspSession::new(session_id.clone());
 
+    // Initialize session with source capabilities to prepare for negotiation
+    session.capabilities = WfdCapabilities::source_capabilities();
+
     let caps_response = match session.process_options() {
         Ok(response) => response,
         Err(_) => "Public: OPTIONS, GET_PARAMETER, SET_PARAMETER, PLAY, TEARDOWN\r\n".to_string(),
@@ -988,6 +1002,8 @@ async fn handle_get_parameter(
 ) -> String {
     let mut lock = sessions.write();
 
+    // Try to find session from header, otherwise use the default approach
+    // For now, in case of multiple sessions, we'd look for recent ones
     let maybe_session_id = lock.keys().last().cloned();
 
     if let Some(session_id) = maybe_session_id {
@@ -1003,7 +1019,27 @@ async fn handle_get_parameter(
             format!("RTSP/1.0 454 Session Not Found\r\nCSeq: {}\r\n\r\n", cseq)
         }
     } else {
-        format!("RTSP/1.0 454 Session Not Found\r\nCSeq: {}\r\n\r\n", cseq)
+        // If we haven't seen a session yet, create a temporary one with the source capabilities
+        let temp_session_id = format!("temp_{}", rand::random::<u64>());
+        let mut temp_session = RtspSession::new(temp_session_id.clone());
+
+        // Initialize with source capabilities from the beginning
+        temp_session.capabilities = WfdCapabilities::source_capabilities();
+
+        // Temporarily store and process
+        lock.insert(temp_session_id.clone(), temp_session);
+
+        if let Some(session) = lock.get_mut(&temp_session_id) {
+            let param_refs: Vec<&str> = param_names.iter().map(|s| s.as_str()).collect();
+            let response = match session.process_get_parameter(&param_refs) {
+                Ok(response) => response,
+                Err(_) => "".to_string(),
+            };
+
+            format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response)
+        } else {
+            format!("RTSP/1.0 454 Session Not Found\r\nCSeq: {}\r\n\r\n", cseq)
+        }
     }
 }
 
@@ -1028,7 +1064,22 @@ async fn handle_set_parameter(
             format!("RTSP/1.0 454 Session Not Found\r\nCSeq: {}\r\n\r\n", cseq)
         }
     } else {
-        format!("RTSP/1.0 454 Session Not Found\r\nCSeq: {}\r\n\r\n", cseq)
+        // If no session exists yet, create one with source capabilities to handle the negotiation
+        let new_session_id = format!("negotiation_{}", rand::random::<u64>());
+        let mut new_session = RtspSession::new(new_session_id.clone());
+
+        // Initialize with source capabilities
+        new_session.capabilities = WfdCapabilities::source_capabilities();
+
+        // Process the parameters to negotiate caps with TV
+        let response = match new_session.process_set_parameter(&params) {
+            Ok(response) => response,
+            Err(_) => "200 OK\r\n".to_string(),
+        };
+
+        lock.insert(new_session_id, new_session);
+
+        format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response)
     }
 }
 

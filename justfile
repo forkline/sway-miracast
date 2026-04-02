@@ -42,10 +42,6 @@ test-e2e: build
 test-verbose: build
     cargo test --workspace -- --nocapture
 
-# Run tests with verbose output
-test-verbose: build
-    cargo test --workspace -- --nocapture
-
 # Run integration tests (requires real services like GStreamer, PipeWire)
 test-integration: build
     cargo test --workspace -- --ignored --nocapture

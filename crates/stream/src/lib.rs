@@ -1,4 +1,6 @@
 use std::fmt;
+mod test_pattern;
+pub use test_pattern::{TestPatternGenerator, TestPatternConfig, Frame};
 
 /// Possible video codecs supported by the stream
 #[derive(Debug, Clone, PartialEq)]
@@ -501,6 +503,7 @@ impl Drop for StreamPipelineInner {
 }
 
 /// Inner type for encapsulating the GStreamer pipeline with a mutex
+#[derive(Clone)]
 pub struct StreamPipeline {
     inner: Arc<Mutex<StreamPipelineInner>>,
 }

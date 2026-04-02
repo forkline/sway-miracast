@@ -84,6 +84,21 @@ trait Device {
 
     #[zbus(property)]
     fn ip_interface(&self) -> zbus::Result<String>;
+    
+    #[zbus(property)]
+    fn ip4_config(&self) -> zbus::Result<zvariant::OwnedObjectPath>;
+    
+    #[zbus(property)]
+    fn active_connection(&self) -> zbus::Result<zvariant::OwnedObjectPath>;
+}
+
+#[zbus::proxy(
+    interface = "org.freedesktop.NetworkManager.IP4Config",
+    default_service = "org.freedesktop.NetworkManager"
+)]
+trait IP4Config {
+    #[zbus(property)]
+    fn addresses(&self) -> zbus::Result<Vec<(u32, u32, u32)>>;
 }
 
 #[derive(Debug, Clone)]
@@ -328,20 +343,29 @@ impl P2pManager {
 
         let device_obj_path = zvariant::ObjectPath::try_from(device_path.as_str())
             .map_err(NetError::ZVariantError)?;
-        let root_path = zvariant::ObjectPath::try_from("/")
-            .map_err(NetError::ZVariantError)?;
+        let root_path = zvariant::ObjectPath::try_from("/").map_err(NetError::ZVariantError)?;
 
         let mut wifi_p2p_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
-        wifi_p2p_props.insert("peer", zvariant::Value::Str(zvariant::Str::from(&sink.address)));
+        wifi_p2p_props.insert(
+            "peer",
+            zvariant::Value::Str(zvariant::Str::from(&sink.address)),
+        );
 
-        let wfd_ies: Vec<u8> = vec![
-            0x00, 0x00, 0x06, 0x01, 0x13, 0x1c, 0x44, 0x00, 0x32,
-        ];
-        wifi_p2p_props.insert("wfd-ies", zvariant::Value::Array(zvariant::Array::from(&wfd_ies)));
+        let wfd_ies: Vec<u8> = vec![0x00, 0x00, 0x06, 0x01, 0x13, 0x1c, 0x44, 0x00, 0x32];
+        wifi_p2p_props.insert(
+            "wfd-ies",
+            zvariant::Value::Array(zvariant::Array::from(&wfd_ies)),
+        );
 
         let mut connection_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
-        connection_props.insert("type", zvariant::Value::Str(zvariant::Str::from("wifi-p2p")));
-        connection_props.insert("id", zvariant::Value::Str(zvariant::Str::from(&self.config.group_name)));
+        connection_props.insert(
+            "type",
+            zvariant::Value::Str(zvariant::Str::from("wifi-p2p")),
+        );
+        connection_props.insert(
+            "id",
+            zvariant::Value::Str(zvariant::Str::from(&self.config.group_name)),
+        );
         connection_props.insert("autoconnect", zvariant::Value::Bool(false));
 
         let mut ipv4_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
@@ -367,10 +391,19 @@ impl P2pManager {
             active_conn_path
         );
 
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let ip_address = self.get_device_ip_address().await.unwrap_or_else(|e| {
+            tracing::warn!("Failed to get IP address: {}, using fallback", e);
+            "192.168.10.1".to_string()
+        });
+
+        tracing::info!("Got IP address: {}", ip_address);
+
         let connected_sink = Sink {
             name: sink.name.clone(),
             address: sink.address.clone(),
-            ip_address: Some("192.168.10.1".to_string()),
+            ip_address: Some(ip_address),
             wfd_capabilities: sink.wfd_capabilities.clone(),
         };
 
@@ -380,15 +413,56 @@ impl P2pManager {
         })
     }
 
+    async fn get_device_ip_address(&self) -> Result<String, NetError> {
+        let device_path = self
+            .device_path
+            .as_ref()
+            .ok_or_else(|| NetError::DeviceNotFound("P2P device path not set".into()))?;
+
+        let device_proxy = DeviceProxy::builder(&self.connection)
+            .path(device_path.clone())?
+            .build()
+            .await
+            .map_err(|e| NetError::NetworkManagerError(format!("Failed to create device proxy: {}", e)))?;
+
+        for _ in 0..10 {
+            if let Ok(ip4_config_path) = device_proxy.ip4_config().await {
+                if ip4_config_path.as_str() != "/" {
+                    let ip4_config = IP4ConfigProxy::builder(&self.connection)
+                        .path(ip4_config_path)?
+                        .build()
+                        .await
+                        .map_err(|e| NetError::NetworkManagerError(format!("Failed to create IP4Config proxy: {}", e)))?;
+
+                    if let Ok(addresses) = ip4_config.addresses().await {
+                        if let Some((addr, _, _)) = addresses.first() {
+                            let ip = u32::from_be(*addr);
+                            return Ok(format!(
+                                "{}.{}.{}.{}",
+                                (ip >> 24) & 0xFF,
+                                (ip >> 16) & 0xFF,
+                                (ip >> 8) & 0xFF,
+                                ip & 0xFF
+                            ));
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        Err(NetError::NetworkManagerError("No IP address assigned".into()))
+    }
+
     pub async fn disconnect(&self) -> Result<(), NetError> {
         let p2p = self
             .p2p_proxy
             .as_ref()
             .ok_or_else(|| NetError::DeviceNotFound("P2P device not initialized".into()))?;
 
-        p2p.stop_find()
-            .await
-            .map_err(|e| NetError::NetworkManagerError(format!("Failed to stop P2P find: {}", e)))?;
+        p2p.stop_find().await.map_err(|e| {
+            NetError::NetworkManagerError(format!("Failed to stop P2P find: {}", e))
+        })?;
 
         tracing::info!("Stopped P2P discovery");
         Ok(())
@@ -424,7 +498,11 @@ fn is_miracast_sink(wfd_ies: &[u8]) -> bool {
         return false;
     }
     let first_byte = wfd_ies[0];
-    tracing::debug!("WFD IEs: {:02x?}, first_byte: 0x{:02x}", wfd_ies, first_byte);
+    tracing::debug!(
+        "WFD IEs: {:02x?}, first_byte: 0x{:02x}",
+        wfd_ies,
+        first_byte
+    );
     if first_byte == 0xdd && wfd_ies.len() >= 4 && wfd_ies[3] == 0x0a {
         return true;
     }

@@ -5,11 +5,11 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
-use swaybeam_capture::{Capture, CaptureConfig};
+use swaybeam_capture::Capture;
 use swaybeam_doctor::{check_all, Report as DoctorReport};
 use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
 use swaybeam_rtsp::RtspServer;
-use swaybeam_stream::{AudioCodec, StreamConfig, StreamPipeline, VideoCodec};
+use swaybeam_stream::{AudioCodec, StreamConfig, StreamPipeline, TestPatternConfig, TestPatternGenerator, VideoCodec};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DaemonState {
@@ -156,14 +156,14 @@ impl Daemon {
 
         let rtsp_addr = "0.0.0.0:7236";
         let rtsp_server = RtspServer::new(rtsp_addr.to_string());
-        
+
         let rtsp_server_clone = RtspServer::new(rtsp_addr.to_string());
         tokio::spawn(async move {
             if let Err(e) = rtsp_server_clone.start().await {
                 tracing::error!("RTSP server error: {:?}", e);
             }
         });
-        
+
         self.rtsp_server = Some(rtsp_server);
         *self.state.write() = DaemonState::Streaming;
 
@@ -177,17 +177,6 @@ impl Daemon {
         if self.get_state() != DaemonState::Streaming {
             return Err(anyhow::anyhow!("Daemon must be in Streaming state"));
         }
-
-        let capture_config = CaptureConfig {
-            width: self.config.video_width,
-            height: self.config.video_height,
-            framerate: self.config.video_framerate,
-            cursor_visible: true,
-        };
-
-        let mut capture = Capture::new(capture_config)?;
-        capture.start().await?;
-        self.capture = Some(capture);
 
         let stream_config = StreamConfig {
             video_codec: VideoCodec::H264,
@@ -203,21 +192,47 @@ impl Daemon {
 
         let pipeline = StreamPipeline::new(stream_config)?;
 
-        if let Some(ref conn) = self.connection {
-            if let Some(ref sink_ip) = conn.get_sink().ip_address {
-                pipeline.set_output(sink_ip, 5004).await?;
-            } else {
-                return Err(anyhow::anyhow!("Sink has no IP address"));
-            }
+        let sink_ip = if let Some(ref conn) = self.connection {
+            conn.get_sink().ip_address.clone()
+                .ok_or_else(|| anyhow::anyhow!("Sink has no IP address"))?
         } else {
             return Err(anyhow::anyhow!("No active connection"));
-        }
+        };
 
+        pipeline.set_output(&sink_ip, 5004).await?;
         pipeline.start().await?;
-        info!("Stream pipeline started");
-        
+        info!("Stream pipeline started, sending to {}:5004", sink_ip);
+
+        let caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", "BGRA")
+            .field("width", self.config.video_width as i32)
+            .field("height", self.config.video_height as i32)
+            .field("framerate", gstreamer::Fraction::new(self.config.video_framerate as i32, 1))
+            .build();
+        pipeline.set_caps(&caps).await?;
+
+        let test_pattern_config = TestPatternConfig {
+            width: self.config.video_width,
+            height: self.config.video_height,
+            framerate: self.config.video_framerate as f32,
+        };
+        let generator = TestPatternGenerator::new(test_pattern_config);
+        let mut frame_receiver = generator.start();
+
+        let pipeline_clone = pipeline.clone();
+        tokio::spawn(async move {
+            while let Some(frame) = frame_receiver.recv().await {
+                let gst_buffer = gstreamer::Buffer::from_slice(frame.data.clone());
+                if let Err(e) = pipeline_clone.push_video_buffer(&gst_buffer).await {
+                    tracing::error!("Failed to push frame: {}", e);
+                    break;
+                }
+            }
+            tracing::info!("Frame sender stopped");
+        });
+
         self.stream = Some(pipeline);
-        info!("Stream pipeline configured");
+        info!("Stream pipeline configured with test pattern generator");
         self.event_tx.send(DaemonEvent::StreamingStarted).ok();
 
         Ok(())
@@ -304,7 +319,7 @@ impl Daemon {
         }
 
         info!("Streaming active, press Ctrl+C to stop...");
-        
+
         tokio::signal::ctrl_c().await.ok();
         info!("Received shutdown signal");
 
