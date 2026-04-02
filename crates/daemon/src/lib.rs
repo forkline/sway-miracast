@@ -190,11 +190,11 @@ impl Daemon {
             audio_channels: 2,
         };
 
-        let mut pipeline = StreamPipeline::new(stream_config)?;
+        let pipeline = StreamPipeline::new(stream_config)?;
 
         if let Some(ref conn) = self.connection {
             if let Some(ref sink_ip) = conn.get_sink().ip_address {
-                pipeline.set_output(sink_ip, 5004)?;
+                pipeline.set_output(sink_ip, 5004).await?;
             } else {
                 return Err(anyhow::anyhow!("Sink has no IP address"));
             }

@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create P2P manager
-    let p2p_manager = P2pManager::new(config).await?;
+    let mut p2p_manager = P2pManager::new(config).await?;
 
     println!("Starting WiFiP2P discovery...");
     p2p_manager.start_discovery().await?; // Updated to match method name in new implementation

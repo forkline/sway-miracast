@@ -205,8 +205,8 @@ async fn stream_command(width: u32, height: u32, framerate: u32, json_output: bo
         ..Default::default()
     };
 
-    let mut pipeline = StreamPipeline::new(config)?;
-    pipeline.set_output("127.0.0.1", 5004)?;
+    let pipeline = StreamPipeline::new(config)?;
+    pipeline.set_output("127.0.0.1", 5004).await?;
 
     if json_output {
         let output = json!({

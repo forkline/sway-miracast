@@ -52,6 +52,23 @@ test-unit:
 test-integration:
     cargo test --test '*'
 
+# Run integration tests with real system services
+test-integration-real:
+    cargo test --test integration_real -- --ignored --nocapture
+
+# Check system requirements
+check-system:
+    ./scripts/test-real-system.sh
+
+# Run the CLI with a test capture
+test-capture:
+    cargo run --bin miracast -- doctor
+    cargo run --bin miracast -- discover -t 5
+
+# Build with all features
+build-all:
+    cargo build --workspace --all-features
+
 # Run all tests
 test-all:
     cargo test --workspace --all-features
@@ -65,7 +82,7 @@ doctor:
 
 # Run system test script
 system-check:
-    ./scripts/test-system.sh
+    ./scripts/test-real-system.sh
 
 # Automatically update changelog based on commits
 update-changelog:

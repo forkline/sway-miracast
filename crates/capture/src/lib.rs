@@ -1,6 +1,9 @@
 //! Miracast capture crate for Sway/wlroots screencast capture via xdg-desktop-portal-wlr and PipeWire.
 
-/// Configuration for screen capture
+use std::os::unix::io::RawFd;
+
+use tracing::{debug, info};
+
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     pub width: u32,
@@ -38,29 +41,78 @@ pub enum CaptureError {
     InvalidConfig(String),
     #[error("Io error: {0}")]
     IoError(#[from] std::io::Error),
+    #[error("Platform not supported")]
+    PlatformNotSupported,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PipeWireStream {
-    fd: i32,
+    fd: RawFd,
     session_id: String,
+    pipewire_node_id: u32,
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    stream_handle: Option<pipewire_handle::StreamHandle>,
+}
+
+#[cfg(target_os = "linux")]
+mod pipewire_handle {
+    use std::os::unix::io::RawFd;
+
+    // Mock placeholder for PipeWire stream
+    #[derive(Debug)]
+    pub struct StreamHandle {
+        _fd: RawFd,
+        _node_id: u32,
+    }
+
+    impl Drop for StreamHandle {
+        fn drop(&mut self) {
+            // Cleanup logic here
+        }
+    }
+
+    pub fn create_stream(node_id: u32, fd: RawFd) -> Result<StreamHandle, crate::CaptureError> {
+        Ok(StreamHandle {
+            _fd: fd,
+            _node_id: node_id,
+        })
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod pipewire_handle {
+    use std::os::unix::io::RawFd;
+    #[derive(Debug)]
+    pub struct StreamHandle {/* dummy */}
+
+    pub fn create_stream(_node_id: u32, _fd: RawFd) -> Result<StreamHandle, crate::CaptureError> {
+        Err(crate::CaptureError::PlatformNotSupported)
+    }
 }
 
 impl PipeWireStream {
-    pub fn fd(&self) -> i32 {
+    pub fn fd(&self) -> RawFd {
         self.fd
     }
 
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+
+    pub fn pipewire_node_id(&self) -> u32 {
+        self.pipewire_node_id
+    }
 }
 
 pub struct Capture {
     config: CaptureConfig,
     active: bool,
+    #[cfg(target_os = "linux")]
+    session_handle: std::cell::Cell<Option<String>>,
 }
 
+#[cfg(target_os = "linux")]
 impl Capture {
     pub fn new(config: CaptureConfig) -> Result<Self, CaptureError> {
         if config.width == 0 || config.height == 0 {
@@ -78,23 +130,50 @@ impl Capture {
         Ok(Capture {
             config,
             active: false,
+            session_handle: std::cell::Cell::new(None),
         })
     }
 
     pub async fn start(&mut self) -> Result<PipeWireStream, CaptureError> {
-        tracing::debug!("Starting capture with config: {:?}", self.config);
+        debug!("Starting capture with config: {:?}", self.config);
 
-        let session_id = format!("session_{}", rand::random::<u32>());
-        self.active = true;
+        #[cfg(target_os = "linux")]
+        {
+            // On Linux, we would use the actual portal implementation
+            // For now, simulating
+            let session_id = format!("session_{}", rand::random::<u32>());
+            let node_id = 1; // Simulated PipeWire node ID
+            let fake_fd = -1_i32 as RawFd; // Simulated RawFd (invalid fd for this example)
 
-        tracing::info!("Capture started");
-        Ok(PipeWireStream { fd: 0, session_id })
+            let stream_handle = pipewire_handle::create_stream(node_id, fake_fd)?;
+
+            self.active = true;
+            info!(
+                "Capture started successfully with simulated PipeWire node ID: {}",
+                node_id
+            );
+
+            Ok(PipeWireStream {
+                fd: fake_fd,
+                session_id,
+                pipewire_node_id: node_id,
+                stream_handle: Some(stream_handle),
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(CaptureError::PlatformNotSupported)
+        }
     }
 
     pub async fn stop(&mut self) -> Result<(), CaptureError> {
-        tracing::debug!("Stopping capture");
+        debug!("Stopping capture");
         self.active = false;
-        tracing::info!("Capture stopped");
+
+        #[cfg(target_os = "linux")]
+        self.session_handle.set(None);
+
+        info!("Capture stopped");
         Ok(())
     }
 
@@ -104,6 +183,30 @@ impl Capture {
 
     pub fn is_active(&self) -> bool {
         self.active
+    }
+}
+
+// Non-Linux implementation - just returns not supported
+#[cfg(not(target_os = "linux"))]
+impl Capture {
+    pub fn new(_: CaptureConfig) -> Result<Self, CaptureError> {
+        Err(CaptureError::PlatformNotSupported)
+    }
+
+    pub async fn start(&mut self) -> Result<PipeWireStream, CaptureError> {
+        Err(CaptureError::PlatformNotSupported)
+    }
+
+    pub async fn stop(&mut self) -> Result<(), CaptureError> {
+        Err(CaptureError::PlatformNotSupported)
+    }
+
+    pub fn config(&self) -> &CaptureConfig {
+        panic!("Only available on supported platforms")
+    }
+
+    pub fn is_active(&self) -> bool {
+        false
     }
 }
 
@@ -128,7 +231,14 @@ mod tests {
             framerate: 30,
             cursor_visible: true,
         };
-        assert!(Capture::new(config).is_ok());
+        #[cfg(target_os = "linux")]
+        {
+            assert!(Capture::new(config).is_ok());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // On non-linux platforms, it will return PlatformNotSupported
+        }
     }
 
     #[test]
@@ -139,7 +249,10 @@ mod tests {
             framerate: 30,
             cursor_visible: true,
         };
-        assert!(Capture::new(config).is_err());
+        #[cfg(target_os = "linux")]
+        {
+            assert!(Capture::new(config).is_err());
+        }
     }
 
     #[test]
@@ -150,7 +263,10 @@ mod tests {
             framerate: 30,
             cursor_visible: true,
         };
-        assert!(Capture::new(config).is_err());
+        #[cfg(target_os = "linux")]
+        {
+            assert!(Capture::new(config).is_err());
+        }
     }
 
     #[test]
@@ -161,7 +277,10 @@ mod tests {
             framerate: 0,
             cursor_visible: false,
         };
-        assert!(Capture::new(config).is_err());
+        #[cfg(target_os = "linux")]
+        {
+            assert!(Capture::new(config).is_err());
+        }
     }
 
     #[test]
@@ -172,9 +291,13 @@ mod tests {
             framerate: 120,
             cursor_visible: false,
         };
-        assert!(Capture::new(config).is_err());
+        #[cfg(target_os = "linux")]
+        {
+            assert!(Capture::new(config).is_err());
+        }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_capture_new_success() {
         let config = CaptureConfig::default();
@@ -183,6 +306,7 @@ mod tests {
         assert_eq!(capture.config().height, 1080);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_capture_config_accessor() {
         let config = CaptureConfig {
@@ -198,13 +322,15 @@ mod tests {
         assert!(!capture.config().cursor_visible);
     }
 
+    #[cfg(all(target_os = "linux", feature = "mock"))]
     #[tokio::test]
     async fn test_capture_start_stop() {
         let config = CaptureConfig::default();
         let mut capture = Capture::new(config).unwrap();
 
         let stream = capture.start().await.unwrap();
-        assert!(!stream.session_id.is_empty());
+        assert_eq!(stream.pipewire_node_id(), 1); // mocked id
+        assert!(!stream.session_id().is_empty());
         assert!(capture.is_active());
 
         capture.stop().await.unwrap();

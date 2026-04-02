@@ -4,13 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-anyhow.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
-tracing-subscriber = { version = "0.3" }
-tokio.workspace = true
-parking_lot = "0.12"
-rand = "0.8"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
 
 [[bin]]
 name = "miracast_rtsp_server"
