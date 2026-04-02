@@ -18,7 +18,7 @@ license=('MIT')
 depends=('glibc' 'gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'gst-plugins-bad' 'pipewire')
 makedepends=('cargo' 'rust' 'git')
 
-source=("git+https://github.com/forkline/swaybeam.git#tag=v${pkgver}")
+source=("git+https://github.com/forkline/swaybeam.git#tag=v${VERSION}")
 sha256sums=('SKIP')
 
 pkgver() {
