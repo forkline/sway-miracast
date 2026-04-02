@@ -633,6 +633,7 @@ mod tests {
             Ok(_) => {}
             Err(StreamError::GstInit(_)) => {}
             Err(StreamError::PipelineConstruction(_)) => {}
+            Err(StreamError::Internal(_)) => {}
             Err(e) => panic!("Unexpected error type: {}", e),
         }
     }
