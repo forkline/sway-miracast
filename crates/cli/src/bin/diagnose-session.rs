@@ -60,6 +60,7 @@ enum Commands {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct SessionLogEntry {
     timestamp: Duration,
     direction: String,
@@ -342,6 +343,7 @@ fn analyze_session(entries: Vec<SessionLogEntry>) -> SessionAnalysis {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum SinkBehavior {
     Standard,
     Slow,

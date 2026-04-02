@@ -1,7 +1,5 @@
 //! Miracast capture crate for Sway/wlroots screencast capture via xdg-desktop-portal-wlr and PipeWire.
 
-#[cfg(feature = "real_portal")]
-use std::os::fd::AsRawFd;
 use std::os::unix::io::RawFd;
 
 use tracing::{debug, info};

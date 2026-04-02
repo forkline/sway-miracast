@@ -161,7 +161,7 @@ mod session_simulation {
             address: String,
         }
 
-        let sinks = vec![
+        let sinks = [
             TestSink {
                 name: "Living Room TV".to_string(),
                 address: "00:11:22:33:44:55".to_string(),

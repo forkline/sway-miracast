@@ -433,8 +433,8 @@ fn validate_full_capabilities(params: HashMap<String, String>) -> WfdValidationR
         }
     }
 
-    if caps.video_formats.is_some() {
-        let video_result = validate_video_formats(caps.video_formats.as_ref().unwrap(), false);
+    if let Some(video_formats) = &caps.video_formats {
+        let video_result = validate_video_formats(video_formats, false);
         if !video_result.valid {
             result.add_error("Video formats validation failed".to_string());
         }
@@ -445,8 +445,8 @@ fn validate_full_capabilities(params: HashMap<String, String>) -> WfdValidationR
         result.add_warning("Missing wfd_video_formats parameter".to_string());
     }
 
-    if caps.audio_codecs.is_some() {
-        let audio_result = validate_audio_codecs(caps.audio_codecs.as_ref().unwrap(), false);
+    if let Some(audio_codecs) = &caps.audio_codecs {
+        let audio_result = validate_audio_codecs(audio_codecs, false);
         if !audio_result.valid {
             result.add_error("Audio codecs validation failed".to_string());
         }
@@ -457,8 +457,8 @@ fn validate_full_capabilities(params: HashMap<String, String>) -> WfdValidationR
         result.add_warning("Missing wfd_audio_codecs parameter".to_string());
     }
 
-    if caps.client_rtp_ports.is_some() {
-        let port_result = validate_rtp_port_spec(caps.client_rtp_ports.as_ref().unwrap());
+    if let Some(client_rtp_ports) = &caps.client_rtp_ports {
+        let port_result = validate_rtp_port_spec(client_rtp_ports);
         if !port_result.valid {
             result.add_error("RTP ports validation failed".to_string());
         }

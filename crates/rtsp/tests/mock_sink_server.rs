@@ -3,7 +3,6 @@
 //! Implements WFD 2.0 protocol specification
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 

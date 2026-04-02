@@ -3,15 +3,9 @@
 
 #[cfg(test)]
 mod integration_with_mock_sink {
-    use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
-
     /// Test RTSP connection to mock server
     #[tokio::test]
     async fn test_rtsp_connection_to_mock_sink() {
-        use std::process::Command;
-
         // Start mock server in background
         println!("=== Testing RTSP Connection to Mock Sink ===");
 
