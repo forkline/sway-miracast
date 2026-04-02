@@ -169,7 +169,10 @@ impl Daemon {
 
         let manager = P2pManager::new(config).await?;
         let sinks = manager
-            .discover_sinks(self.config.discovery_timeout)
+            .discover_sinks(
+                self.config.discovery_timeout,
+                self.config.preferred_sink.as_deref(),
+            )
             .await?;
 
         *self.state.write() = DaemonState::Idle;
@@ -363,9 +366,12 @@ impl Daemon {
             );
             info!("Our P2P IP: {:?}", conn.get_sink().ip_address);
 
+            const RTSP_CONNECT_ATTEMPTS: usize = 12;
+            const RTSP_CONNECT_RETRY_DELAY_MS: u64 = 300;
+
             let mut connect_error = None;
             let mut rtsp_client = None;
-            for attempt in 1..=6 {
+            for attempt in 1..=RTSP_CONNECT_ATTEMPTS {
                 match RtspClient::connect(&go_ip, rtsp_port, conn.get_sink().ip_address.as_deref())
                     .await
                 {
@@ -383,8 +389,9 @@ impl Daemon {
                         );
                         connect_error = Some(err);
 
-                        if attempt < 6 {
-                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        if attempt < RTSP_CONNECT_ATTEMPTS {
+                            tokio::time::sleep(Duration::from_millis(RTSP_CONNECT_RETRY_DELAY_MS))
+                                .await;
                         }
                     }
                 }

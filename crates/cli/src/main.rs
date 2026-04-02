@@ -110,7 +110,9 @@ async fn discover_command(timeout: u64, json_output: bool) -> Result<()> {
     };
 
     let manager = P2pManager::new(config).await?;
-    let devices = manager.discover_sinks(Duration::from_secs(timeout)).await?;
+    let devices = manager
+        .discover_sinks(Duration::from_secs(timeout), None)
+        .await?;
 
     if json_output {
         let output = json!({
@@ -154,7 +156,7 @@ async fn connect_command(sink_param: &str, json_output: bool) -> Result<()> {
     };
 
     let manager = P2pManager::new(config).await?;
-    let devices = manager.discover_sinks(Duration::from_secs(5)).await?;
+    let devices = manager.discover_sinks(Duration::from_secs(5), None).await?;
 
     let target = devices
         .into_iter()

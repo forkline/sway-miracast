@@ -16,7 +16,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     p2p_manager.start_discovery().await?; // Updated to match method name in new implementation
 
     println!("Discovering Miracast sinks...");
-    let sinks = p2p_manager.discover_sinks(Duration::from_secs(10)).await?;
+    let sinks = p2p_manager
+        .discover_sinks(Duration::from_secs(10), None)
+        .await?;
 
     // Stop discovery after we're done
     p2p_manager.stop_discovery().await?; // Updated to match method name in new implementation

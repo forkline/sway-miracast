@@ -234,7 +234,11 @@ impl P2pManager {
         ))
     }
 
-    pub async fn discover_sinks(&self, timeout: Duration) -> Result<Vec<Sink>, NetError> {
+    pub async fn discover_sinks(
+        &self,
+        timeout: Duration,
+        preferred_sink: Option<&str>,
+    ) -> Result<Vec<Sink>, NetError> {
         let p2p = self
             .p2p_proxy
             .as_ref()
@@ -253,6 +257,8 @@ impl P2pManager {
             NetError::DiscoveryError(format!("Failed to create peer stream: {}", e))
         })?;
         let mut discovered_peers = Vec::new();
+        let mut preferred_match = None;
+        let mut preferred_poll = tokio::time::interval(Duration::from_millis(500));
 
         let timeout_future = tokio::time::sleep(timeout);
         tokio::pin!(timeout_future);
@@ -264,6 +270,47 @@ impl P2pManager {
                         let peer = peer_path.peer.clone();
                         tracing::info!("Discovered peer: {}", peer);
                         discovered_peers.push(peer);
+
+                        if let Some(preferred_sink) = preferred_sink {
+                            if let Some(sink) = self.peer_to_sink(&peer_path.peer).await? {
+                                let preferred_address = preferred_sink.to_ascii_lowercase();
+                                let sink_address = sink.address.to_ascii_lowercase();
+                                if sink.name == preferred_sink || sink_address == preferred_address {
+                                    tracing::info!(
+                                        "Preferred sink {} discovered, ending discovery early",
+                                        preferred_sink
+                                    );
+                                    preferred_match = Some(sink);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ = preferred_poll.tick(), if preferred_sink.is_some() => {
+                    let current_peer_paths = p2p.peers().await.map_err(|e| {
+                        NetError::DiscoveryError(format!("Failed to get current peers: {}", e))
+                    })?;
+
+                    if let Some(preferred_sink) = preferred_sink {
+                        let preferred_address = preferred_sink.to_ascii_lowercase();
+                        for peer_path in current_peer_paths {
+                            if let Some(sink) = self.peer_to_sink(&peer_path).await? {
+                                let sink_address = sink.address.to_ascii_lowercase();
+                                if sink.name == preferred_sink || sink_address == preferred_address {
+                                    tracing::info!(
+                                        "Preferred sink {} already visible, ending discovery early",
+                                        preferred_sink
+                                    );
+                                    preferred_match = Some(sink);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if preferred_match.is_some() {
+                        break;
                     }
                 }
                 _ = &mut timeout_future => {
@@ -271,6 +318,13 @@ impl P2pManager {
                     break;
                 }
             }
+        }
+
+        if let Some(sink) = preferred_match {
+            p2p.stop_find()
+                .await
+                .map_err(|e| NetError::DiscoveryError(format!("Failed to stop P2P find: {}", e)))?;
+            return Ok(vec![sink]);
         }
 
         // Get currently available peers
@@ -286,44 +340,8 @@ impl P2pManager {
 
         let mut sinks = Vec::new();
         for peer_path in unique_peers {
-            let peer = P2PPeerProxy::builder(&self.connection)
-                .path(peer_path)?
-                .build()
-                .await
-                .map_err(|e| {
-                    NetError::NetworkManagerError(format!("Failed to create peer proxy: {}", e))
-                })?;
-
-            let hw_address = peer.hw_address().await.map_err(|e| {
-                NetError::NetworkManagerError(format!("Failed to get peer address: {}", e))
-            })?;
-
-            let name = peer
-                .name()
-                .await
-                .unwrap_or_else(|_| "Unknown Peer".to_string());
-
-            let wfd_ies = peer.WfdIEs().await.unwrap_or_default();
-            tracing::debug!(
-                "Peer {} WFD IEs length: {}, data: {:02x?}",
-                name,
-                wfd_ies.len(),
-                wfd_ies
-            );
-
-            if is_miracast_sink(&wfd_ies) {
-                sinks.push(Sink {
-                    name: name.clone(),
-                    address: hw_address.clone(),
-                    ip_address: None,
-                    go_ip_address: None,
-                    rtsp_port: parse_wfd_rtsp_port(&wfd_ies),
-                    wfd_capabilities: Some(parse_wfd_capabilities(&wfd_ies)),
-                });
-
-                tracing::info!("Found Miracast sink: {} ({})", name, hw_address);
-            } else {
-                tracing::debug!("Peer {} ({}) is not a Miracast sink", name, hw_address);
+            if let Some(sink) = self.peer_to_sink(peer_path).await? {
+                sinks.push(sink);
             }
         }
 
@@ -333,6 +351,52 @@ impl P2pManager {
             .map_err(|e| NetError::DiscoveryError(format!("Failed to stop P2P find: {}", e)))?;
 
         Ok(sinks)
+    }
+
+    async fn peer_to_sink(
+        &self,
+        peer_path: &zvariant::OwnedObjectPath,
+    ) -> Result<Option<Sink>, NetError> {
+        let peer = P2PPeerProxy::builder(&self.connection)
+            .path(peer_path)?
+            .build()
+            .await
+            .map_err(|e| {
+                NetError::NetworkManagerError(format!("Failed to create peer proxy: {}", e))
+            })?;
+
+        let hw_address = peer.hw_address().await.map_err(|e| {
+            NetError::NetworkManagerError(format!("Failed to get peer address: {}", e))
+        })?;
+
+        let name = peer
+            .name()
+            .await
+            .unwrap_or_else(|_| "Unknown Peer".to_string());
+
+        let wfd_ies = peer.WfdIEs().await.unwrap_or_default();
+        tracing::debug!(
+            "Peer {} WFD IEs length: {}, data: {:02x?}",
+            name,
+            wfd_ies.len(),
+            wfd_ies
+        );
+
+        if !is_miracast_sink(&wfd_ies) {
+            tracing::debug!("Peer {} ({}) is not a Miracast sink", name, hw_address);
+            return Ok(None);
+        }
+
+        tracing::info!("Found Miracast sink: {} ({})", name, hw_address);
+
+        Ok(Some(Sink {
+            name,
+            address: hw_address,
+            ip_address: None,
+            go_ip_address: None,
+            rtsp_port: parse_wfd_rtsp_port(&wfd_ies),
+            wfd_capabilities: Some(parse_wfd_capabilities(&wfd_ies)),
+        }))
     }
 
     pub async fn connect(&self, sink: &Sink) -> Result<P2pConnection, NetError> {
@@ -414,30 +478,36 @@ impl P2pManager {
         // Prefer the wpa_supplicant group-start event so we can connect immediately.
         tracing::info!("Waiting for P2P group IP information...");
         let group_started = self.wait_for_group_started().await;
+        let preferred_interface = group_started
+            .as_ref()
+            .map(|info| info.interface_name.as_str());
+        let ready_interface = self
+            .wait_for_p2p_interface_address(preferred_interface)
+            .await;
 
-        let (ip_address, go_ip_address, interface_name) = if let Some(group_started) = group_started
+        let (ip_address, interface_name) = if let Some((interface_name, ip_address)) =
+            ready_interface
         {
-            (
-                group_started.ip_address,
-                Some(group_started.go_ip_address),
-                group_started.interface_name,
-            )
+            (ip_address, interface_name)
         } else {
-            tracing::warn!("Did not observe P2P-GROUP-STARTED in wpa_supplicant logs; falling back to NetworkManager IP lookup");
+            if group_started.is_none() {
+                tracing::warn!("Did not observe P2P-GROUP-STARTED in wpa_supplicant logs; falling back to NetworkManager IP lookup");
+            }
 
             let ip_address = match self.get_ip_from_active_connection(&active_conn_path).await {
                 Ok(ip) => ip,
-                Err(_) => match self.get_device_ip_address().await {
-                    Ok(ip) => ip,
-                    Err(_) => self.find_p2p_interface_ip().unwrap_or_else(|| {
-                        tracing::warn!("Could not find P2P interface IP, using fallback");
-                        "192.168.49.10".to_string()
-                    }),
-                },
+                Err(_) => self.get_device_ip_address().await?,
             };
 
-            (ip_address, None, self.config.interface_name.clone())
+            (
+                ip_address,
+                group_started
+                    .as_ref()
+                    .map(|info| info.interface_name.clone())
+                    .unwrap_or_else(|| self.config.interface_name.clone()),
+            )
         };
+        let go_ip_address = group_started.map(|info| info.go_ip_address);
 
         tracing::info!("Got IP address: {}", ip_address);
 
@@ -486,6 +556,21 @@ impl P2pManager {
                     info.go_ip_address
                 );
                 return Some(info);
+            }
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        None
+    }
+
+    async fn wait_for_p2p_interface_address(
+        &self,
+        preferred_interface: Option<&str>,
+    ) -> Option<(String, String)> {
+        for _ in 0..24 {
+            if let Some(interface_info) = self.find_p2p_interface_address(preferred_interface) {
+                return Some(interface_info);
             }
 
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -618,8 +703,10 @@ impl P2pManager {
         ))
     }
 
-    fn find_p2p_interface_ip(&self) -> Option<String> {
-        // Try to find the dynamically created p2p interface and read its IPv4 address.
+    fn find_p2p_interface_address(
+        &self,
+        preferred_interface: Option<&str>,
+    ) -> Option<(String, String)> {
         use std::process::Command;
 
         let output = Command::new("ip")
@@ -628,39 +715,36 @@ impl P2pManager {
             .ok()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut fallback = None;
 
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 && (parts[1].starts_with("p2p-") || parts[1] == "p2p0") {
-                if let Some(ip) = parts[3].split('/').next() {
-                    tracing::debug!("Found P2P IP on {}: {}", parts[1], ip);
-                    return Some(ip.to_string());
-                }
+            if parts.len() < 4 {
+                continue;
             }
+
+            let iface = parts[1];
+            if !(iface.starts_with("p2p-") || iface == "p2p0") {
+                continue;
+            }
+
+            let Some(ip) = parts[3].split('/').next() else {
+                continue;
+            };
+
+            if preferred_interface == Some(iface) {
+                tracing::debug!("Found preferred P2P IP on {}: {}", iface, ip);
+                return Some((iface.to_string(), ip.to_string()));
+            }
+
+            fallback.get_or_insert_with(|| (iface.to_string(), ip.to_string()));
         }
 
-        // Fallback: check specific p2p interfaces
-        for iface in &["p2p0", "p2p-wlp2s0-0", "p2p-wlp2s0-1"] {
-            let output = Command::new("ip")
-                .args(["-4", "addr", "show", iface])
-                .output()
-                .ok()?;
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if line.contains("inet ") {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if let Some(addr) = parts.get(1) {
-                        if let Some(ip) = addr.split('/').next() {
-                            tracing::debug!("Found IP on {}: {}", iface, ip);
-                            return Some(ip.to_string());
-                        }
-                    }
-                }
-            }
+        if let Some((iface, ip)) = &fallback {
+            tracing::debug!("Found fallback P2P IP on {}: {}", iface, ip);
         }
 
-        None
+        fallback
     }
 
     pub async fn disconnect(&self) -> Result<(), NetError> {
@@ -784,6 +868,16 @@ mod tests {
         // Additional test with custom port
         let custom_port = vec![0x00, 0x00, 0x06, 0x00, 0x05, 0x08, 0xae, 0x00, 0xc8];
         assert_eq!(parse_wfd_rtsp_port(&custom_port), 2222);
+    }
+
+    #[test]
+    fn test_parse_group_started_line() {
+        let line = "P2P-GROUP-STARTED p2p-wlp2s0-7 client ssid=\"DIRECT-XY\" freq=2412 go_dev_addr=22:28:bc:a8:6c:fe [PERSISTENT] ip_addr=192.168.49.10 ip_mask=255.255.255.0 go_ip_addr=192.168.49.1";
+        let info = P2pManager::parse_group_started_line(line).expect("group started info");
+
+        assert_eq!(info.interface_name, "p2p-wlp2s0-7");
+        assert_eq!(info.ip_address, "192.168.49.10");
+        assert_eq!(info.go_ip_address, "192.168.49.1");
     }
 
     #[tokio::test]
