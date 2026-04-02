@@ -1,4 +1,4 @@
-use miracast_net::{P2pConfig, P2pManager, Sink};
+use miracast_net::{P2pConfig, P2pManager};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -9,6 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 miracast-daemon = { path = "../daemon" }
+miracast-net = { path = "../net" }
+miracast-rtsp = { path = "../rtsp" }
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

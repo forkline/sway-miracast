@@ -1,0 +1,1308 @@
+use std::process::Command;
+use std::time::Duration;
+
+/// Trait for command execution to allow for mocking in tests
+pub trait CommandRunner {
+    fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput, NetError>;
+}
+
+/// Output structure for command results
+#[derive(Debug, Clone)]
+pub struct CommandOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub status: bool, // true for success, false for failure
+}
+
+/// Real command runner that executes actual system commands
+#[derive(Debug, Clone)]
+pub struct RealCommandRunner;
+
+impl CommandRunner for RealCommandRunner {
+    fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput, NetError> {
+        let output = Command::new(cmd).args(args).output().map_err(|e| {
+            NetError::CommandFailed(format!("Command '{}' failed to execute: {}", cmd, e))
+        })?;
+
+        Ok(CommandOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            status: output.status.success(),
+        })
+    }
+}
+
+/// Mock command runner for testing purposes
+#[derive(Debug, Clone)]
+pub struct MockCommandRunner {
+    /// Map of command signature to expected output
+    responses: std::collections::HashMap<String, Result<CommandOutput, NetError>>,
+}
+
+impl MockCommandRunner {
+    pub fn new() -> Self {
+        Self {
+            responses: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn add_response(
+        &mut self,
+        cmd: &str,
+        args: &[&str],
+        output: Result<CommandOutput, NetError>,
+    ) {
+        let key = format!("{} {}", cmd, args.join(" "));
+        self.responses.insert(key, output);
+    }
+}
+
+impl CommandRunner for MockCommandRunner {
+    fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput, NetError> {
+        let key = format!("{} {}", cmd, args.join(" "));
+        match self.responses.get(&key) {
+            Some(result) => result.clone(),
+            None => Err(NetError::CommandFailed(format!(
+                "Unexpected command: {} {}",
+                cmd,
+                args.join(" ")
+            ))),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct P2pManager<R: CommandRunner = RealCommandRunner> {
+    config: P2pConfig,
+    command_runner: R,
+}
+
+#[derive(Debug, Clone)]
+pub struct Sink {
+    pub name: String,
+    pub address: String,
+    pub ip_address: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct P2pConfig {
+    pub interface_name: String,
+    pub group_name: String,
+}
+
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum NetError {
+    #[error("Command execution failed: {0}")]
+    CommandFailed(String),
+
+    #[error("NetworkManager/dbus error: {0}")]
+    NetworkManagerError(String),
+
+    #[error("Connection timeout")]
+    ConnectionTimeout,
+
+    #[error("Device not found: {0}")]
+    DeviceNotFound(String),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
+}
+
+#[derive(Debug)]
+pub struct P2pConnection {
+    sink: Sink,
+    interface: String,
+}
+
+impl P2pManager<RealCommandRunner> {
+    pub fn new(config: P2pConfig) -> Result<Self, NetError> {
+        Self::new_with_command_runner(config, RealCommandRunner)
+    }
+}
+
+impl<R: CommandRunner> P2pManager<R> {
+    pub fn new_with_command_runner(config: P2pConfig, command_runner: R) -> Result<Self, NetError> {
+        // Validate that the interface exists
+        Self::validate_interface(&config.interface_name, &command_runner)?;
+
+        Ok(P2pManager {
+            config,
+            command_runner,
+        })
+    }
+
+    fn validate_interface(interface: &str, runner: &R) -> Result<(), NetError> {
+        let output = runner.run("nmcli", &["device", "status"])?;
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+
+        if !output_str.contains(interface) {
+            return Err(NetError::DeviceNotFound(format!(
+                "Interface {} not found",
+                interface
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub fn discover_sinks(&self, _timeout: Duration) -> Result<Vec<Sink>, NetError> {
+        // In practice, we'd implement timeout logic with a subprocess that times out,
+        // but for now, we'll just pass the timeout to potentially run nmcli with a timeout
+
+        // Use nmcli to scan for available P2P devices
+        let output = self
+            .command_runner
+            .run("nmcli", &["device", "wifi", "rescan"])
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => {
+                    NetError::CommandFailed(format!("Failed to execute nmcli rescan: {}", msg))
+                }
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(format!(
+                "nmcli rescan failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        // Give some time for the rescan to happen
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let output = self
+            .command_runner
+            .run(
+                "nmcli",
+                &["device", "wifi", "list", "--fields", "NAME,DEVICE,MAC,BARS"],
+            )
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => {
+                    NetError::CommandFailed(format!("Failed to execute nmcli: {}", msg))
+                }
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(format!(
+                "nmcli failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        let output_str = String::from_utf8(output.stdout)
+            .map_err(|e| NetError::ParseError(format!("Failed to parse nmcli output: {}", e)))?;
+
+        self.parse_discovered_devices(&output_str)
+    }
+
+    fn parse_discovered_devices(&self, output: &str) -> Result<Vec<Sink>, NetError> {
+        let mut sinks = Vec::new();
+
+        // Skip the header line and process each device
+        for line in output.lines().skip(1) {
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Parse typical nmcli output format: NAME DEVICE MAC BARS
+            let parts: Vec<&str> = line.split_whitespace().collect();
+
+            if parts.len() >= 3 {
+                // In typical nmcli, name is first field, mac is typically third field
+                let name = parts[0].to_string();
+                let mac = parts[2].to_string();
+
+                if !mac.starts_with(|c: char| c.is_ascii_hexdigit() || c == ':')
+                    || !mac.contains(':')
+                    || mac.len() != 17
+                {
+                    continue; // Skip invalid MAC addresses
+                }
+
+                sinks.push(Sink {
+                    name,
+                    address: mac,
+                    ip_address: None,
+                });
+            }
+        }
+
+        Ok(sinks)
+    }
+
+    pub fn connect(&self, sink: &Sink) -> Result<P2pConnection, NetError> {
+        // First check if we're already connected to avoid duplicate attempts
+        if self.is_device_connected(&sink.address)? {
+            return Err(NetError::NetworkManagerError(
+                "Device already connected".to_string(),
+            ));
+        }
+
+        // Use nmcli to connect to P2P device using its name
+        let output = self
+            .command_runner
+            .run("nmcli", &["device", "wifi", "connect", &sink.name])
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => NetError::CommandFailed(format!(
+                    "Failed to execute nmcli connecting to {}: {}",
+                    sink.name, msg
+                )),
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(format!(
+                "Connecting to {} failed: {}",
+                sink.name,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        // Get IP address assigned after connection
+        let ip_address = self.get_ip_address()?;
+
+        // Update the sink with the IP address (but clone since we take a ref)
+        let connected_sink = Sink {
+            name: sink.name.clone(),
+            address: sink.address.clone(),
+            ip_address,
+        };
+
+        Ok(P2pConnection {
+            sink: connected_sink,
+            interface: self.config.interface_name.clone(),
+        })
+    }
+
+    fn is_device_connected(&self, address: &str) -> Result<bool, NetError> {
+        let output = self
+            .command_runner
+            .run("nmcli", &["device", "status"])
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => {
+                    NetError::CommandFailed(format!("Failed to check device status: {}", msg))
+                }
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(
+                "Failed to get device status".to_string(),
+            ));
+        }
+
+        let output_str = String::from_utf8(output.stdout)
+            .map_err(|e| NetError::ParseError(format!("Failed to parse nmcli output: {}", e)))?;
+
+        Ok(output_str.contains(address))
+    }
+
+    fn get_ip_address(&self) -> Result<Option<String>, NetError> {
+        let output = self
+            .command_runner
+            .run("nmcli", &["device", "show", &self.config.interface_name])
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => NetError::CommandFailed(format!(
+                    "Failed to get IP address for interface: {}",
+                    msg
+                )),
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(
+                "Failed to show device info for IP address retrieval".to_string(),
+            ));
+        }
+
+        let output_str = String::from_utf8(output.stdout)
+            .map_err(|e| NetError::ParseError(format!("Failed to parse nmcli output: {}", e)))?;
+
+        // Look for IP address in output (format is usually 'IP4.ADDRESS[1]:...'
+        for line in output_str.lines() {
+            if line.trim().starts_with("IP4.ADDRESS") {
+                // Extract IP address from format like "IP4.ADDRESS[1]:                         192.168.1.100/24"
+                if let Some(after_colon) = line.find(':') {
+                    let ip_part = &line[after_colon + 1..].trim();
+                    let ip = ip_part.split('/').next().unwrap_or("").trim().to_string();
+
+                    if !ip.is_empty() && ip != "-" {
+                        return Ok(Some(ip));
+                    }
+                }
+            }
+        }
+
+        Ok(None) // No assigned IP
+    }
+
+    pub fn disconnect(&self) -> Result<(), NetError> {
+        let output = self
+            .command_runner
+            .run(
+                "nmcli",
+                &["device", "disconnect", &self.config.interface_name],
+            )
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => {
+                    NetError::CommandFailed(format!("Failed to disconnect interface: {}", msg))
+                }
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(format!(
+                "Disconnecting interface {} failed: {}",
+                self.config.interface_name,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+impl P2pConnection {
+    pub fn get_sink(&self) -> &Sink {
+        &self.sink
+    }
+
+    pub fn get_interface(&self) -> &str {
+        &self.interface
+    }
+}
+
+/// Output structure for command results
+#[derive(Debug)]
+pub struct CommandOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub status: bool, // true for success, false for failure
+}
+
+/// Real command runner that executes actual system commands
+#[derive(Debug, Clone)]
+pub struct RealCommandRunner;
+
+impl CommandRunner for RealCommandRunner {
+    fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput, NetError> {
+        let output = Command::new(cmd).args(args).output().map_err(|e| {
+            NetError::CommandFailed(format!("Command '{}' failed to execute: {}", cmd, e))
+        })?;
+
+        Ok(CommandOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            status: output.status.success(),
+        })
+    }
+}
+
+/// Mock command runner for testing purposes
+#[derive(Debug, Clone)]
+pub struct MockCommandRunner {
+    /// Map of command signature to expected output
+    responses: std::collections::HashMap<String, Result<CommandOutput, NetError>>,
+}
+
+impl MockCommandRunner {
+    pub fn new() -> Self {
+        Self {
+            responses: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn add_response(
+        &mut self,
+        cmd: &str,
+        args: &[&str],
+        output: Result<CommandOutput, NetError>,
+    ) {
+        let key = format!("{} {}", cmd, args.join(" "));
+        self.responses.insert(key, output);
+    }
+}
+
+impl CommandRunner for MockCommandRunner {
+    fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput, NetError> {
+        let key = format!("{} {}", cmd, args.join(" "));
+        match self.responses.get(&key) {
+            Some(result) => result.clone(),
+            None => Err(NetError::CommandFailed(format!(
+                "Unexpected command: {} {}",
+                cmd,
+                args.join(" ")
+            ))),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct P2pManager<R: CommandRunner = RealCommandRunner> {
+    config: P2pConfig,
+    command_runner: R,
+}
+
+#[derive(Debug, Clone)]
+pub struct Sink {
+    pub name: String,
+    pub address: String,
+    pub ip_address: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct P2pConfig {
+    pub interface_name: String,
+    pub group_name: String,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum NetError {
+    #[error("Command execution failed: {0}")]
+    CommandFailed(String),
+
+    #[error("NetworkManager/dbus error: {0}")]
+    NetworkManagerError(String),
+
+    #[error("Connection timeout")]
+    ConnectionTimeout,
+
+    #[error("Device not found: {0}")]
+    DeviceNotFound(String),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
+}
+
+pub struct P2pConnection {
+    sink: Sink,
+    interface: String,
+}
+
+impl P2pManager<RealCommandRunner> {
+    pub fn new(config: P2pConfig) -> Result<Self, NetError> {
+        Self::new_with_command_runner(config, RealCommandRunner)
+    }
+}
+
+impl<R: CommandRunner> P2pManager<R> {
+    pub fn new_with_command_runner(config: P2pConfig, command_runner: R) -> Result<Self, NetError> {
+        // Validate that the interface exists
+        Self::validate_interface(&config.interface_name, &command_runner)?;
+
+        Ok(P2pManager {
+            config,
+            command_runner,
+        })
+    }
+
+    fn validate_interface(interface: &str, runner: &R) -> Result<(), NetError> {
+        let output = runner.run("nmcli", &["device", "status"])?;
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+
+        if !output_str.contains(interface) {
+            return Err(NetError::DeviceNotFound(format!(
+                "Interface {} not found",
+                interface
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub fn discover_sinks(&self, _timeout: Duration) -> Result<Vec<Sink>, NetError> {
+        // In practice, we'd implement timeout logic with a subprocess that times out,
+        // but for now, we'll just pass the timeout to potentially run nmcli with a timeout
+
+        // Use nmcli to scan for available P2P devices
+        let output = self
+            .command_runner
+            .run("nmcli", &["device", "wifi", "rescan"])
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => {
+                    NetError::CommandFailed(format!("Failed to execute nmcli rescan: {}", msg))
+                }
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(format!(
+                "nmcli rescan failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        // Give some time for the rescan to happen
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let output = self
+            .command_runner
+            .run(
+                "nmcli",
+                &["device", "wifi", "list", "--fields", "NAME,DEVICE,MAC,BARS"],
+            )
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => {
+                    NetError::CommandFailed(format!("Failed to execute nmcli: {}", msg))
+                }
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(format!(
+                "nmcli failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        let output_str = String::from_utf8(output.stdout).map_err(|_e| {
+            NetError::ParseError(format!("Failed to parse nmcli output: Invalid UTF-8"))
+        })?;
+
+        self.parse_discovered_devices(&output_str)
+    }
+
+    fn parse_discovered_devices(&self, output: &str) -> Result<Vec<Sink>, NetError> {
+        let mut sinks = Vec::new();
+
+        // Skip the header line and process each device
+        for line in output.lines().skip(1) {
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Parse typical nmcli output format: NAME DEVICE MAC BARS
+            let parts: Vec<&str> = line.split_whitespace().collect();
+
+            if parts.len() >= 3 {
+                // In typical nmcli, name is first field, mac is typically third field
+                let name = parts[0].to_string();
+                let mac = parts[2].to_string();
+
+                if !mac.starts_with(|c: char| c.is_ascii_hexdigit() || c == ':')
+                    || !mac.contains(':')
+                    || mac.len() != 17
+                {
+                    continue; // Skip invalid MAC addresses
+                }
+
+                sinks.push(Sink {
+                    name,
+                    address: mac,
+                    ip_address: None,
+                });
+            }
+        }
+
+        Ok(sinks)
+    }
+
+    pub fn connect(&self, sink: &Sink) -> Result<P2pConnection, NetError> {
+        // First check if we're already connected to avoid duplicate attempts
+        if self.is_device_connected(&sink.address)? {
+            return Err(NetError::NetworkManagerError(
+                "Device already connected".to_string(),
+            ));
+        }
+
+        // Use nmcli to connect to P2P device using its name
+        let output = self
+            .command_runner
+            .run("nmcli", &["device", "wifi", "connect", &sink.name])
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => NetError::CommandFailed(format!(
+                    "Failed to execute nmcli connecting to {}: {}",
+                    sink.name, msg
+                )),
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(format!(
+                "Connecting to {} failed: {}",
+                sink.name,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        // Get IP address assigned after connection
+        let ip_address = self.get_ip_address()?;
+
+        // Update the sink with the IP address (but clone since we take a ref)
+        let connected_sink = Sink {
+            name: sink.name.clone(),
+            address: sink.address.clone(),
+            ip_address,
+        };
+
+        Ok(P2pConnection {
+            sink: connected_sink,
+            interface: self.config.interface_name.clone(),
+        })
+    }
+
+    fn is_device_connected(&self, address: &str) -> Result<bool, NetError> {
+        let output = self
+            .command_runner
+            .run("nmcli", &["device", "status"])
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => {
+                    NetError::CommandFailed(format!("Failed to check device status: {}", msg))
+                }
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(
+                "Failed to get device status".to_string(),
+            ));
+        }
+
+        let output_str = String::from_utf8(output.stdout).map_err(|_e| {
+            NetError::ParseError(format!("Failed to parse nmcli output: Invalid UTF-8"))
+        })?;
+
+        Ok(output_str.contains(address))
+    }
+
+    fn get_ip_address(&self) -> Result<Option<String>, NetError> {
+        let output = self
+            .command_runner
+            .run("nmcli", &["device", "show", &self.config.interface_name])
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => NetError::CommandFailed(format!(
+                    "Failed to get IP address for interface: {}",
+                    msg
+                )),
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(
+                "Failed to show device info for IP address retrieval".to_string(),
+            ));
+        }
+
+        let output_str = String::from_utf8(output.stdout).map_err(|_e| {
+            NetError::ParseError(format!("Failed to parse nmcli output: Invalid UTF-8"))
+        })?;
+
+        // Look for IP address in output (format is usually 'IP4.ADDRESS[1]:...'
+        for line in output_str.lines() {
+            if line.trim().starts_with("IP4.ADDRESS") {
+                // Extract IP address from format like "IP4.ADDRESS[1]:                         192.168.1.100/24"
+                if let Some(after_colon) = line.find(':') {
+                    let ip_part = &line[after_colon + 1..].trim();
+                    let ip = ip_part.split('/').next().unwrap_or("").trim().to_string();
+
+                    if !ip.is_empty() && ip != "-" {
+                        return Ok(Some(ip));
+                    }
+                }
+            }
+        }
+
+        Ok(None) // No assigned IP
+    }
+
+    pub fn disconnect(&self) -> Result<(), NetError> {
+        let output = self
+            .command_runner
+            .run(
+                "nmcli",
+                &["device", "disconnect", &self.config.interface_name],
+            )
+            .map_err(|e| match e {
+                NetError::CommandFailed(msg) => {
+                    NetError::CommandFailed(format!("Failed to disconnect interface: {}", msg))
+                }
+                other => other,
+            })?;
+
+        if !output.status {
+            return Err(NetError::CommandFailed(format!(
+                "Disconnecting interface {} failed: {}",
+                self.config.interface_name,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+impl P2pConnection {
+    pub fn get_sink(&self) -> &Sink {
+        &self.sink
+    }
+
+    pub fn get_interface(&self) -> &str {
+        &self.interface
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_p2p_config_creation() {
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        assert_eq!(config.interface_name, "wlan0");
+        assert_eq!(config.group_name, "test_group");
+    }
+
+    #[test]
+    fn test_sink_creation() {
+        let sink = Sink {
+            name: "Test Sink".to_string(),
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            ip_address: Some("192.168.1.100".to_string()),
+        };
+
+        assert_eq!(sink.name, "Test Sink");
+        assert_eq!(sink.address, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(sink.ip_address, Some("192.168.1.100".to_string()));
+    }
+
+    #[test]
+    fn test_sink_without_ip() {
+        let sink = Sink {
+            name: "Test Sink".to_string(),
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            ip_address: None,
+        };
+
+        assert_eq!(sink.ip_address, None);
+    }
+
+    #[test]
+    fn test_p2p_manager_new_valid_interface() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "status"],
+            Ok(CommandOutput {
+                stdout: b"wlan0 p2p-dev-wlan0 connected \neth0 ethernet -- \np2p-wlan0-0 p2p-client AA:BB:CC:DD:EE:FF connected".to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let result = P2pManager::new_with_command_runner(config, mock_runner);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_p2p_manager_new_invalid_interface() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "status"],
+            Ok(CommandOutput {
+                stdout: b"eth0 ethernet -- \nenp0s31f6 ethernet -- \nlo loopback unmanaged "
+                    .to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let result = P2pManager::new_with_command_runner(config, mock_runner);
+        assert!(matches!(result.unwrap_err(), NetError::DeviceNotFound(_)));
+    }
+
+    #[test]
+    fn test_discover_sinks_success() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // First rescan
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "wifi", "rescan"],
+            Ok(CommandOutput {
+                stdout: vec![],
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        // Then list command
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "wifi", "list", "--fields", "NAME,DEVICE,MAC,BARS"],
+            Ok(CommandOutput {
+                stdout: b"NAME              DEVICE           MAC               BARS\nMiracastTest     p2p-miracast     AA:BB:CC:DD:EE:FF  ****\nOtherDevice      p2p-other        11:22:33:44:55:66  ***".as_bytes().to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let result = manager.discover_sinks(Duration::from_secs(10));
+
+        assert!(result.is_ok());
+        let sinks = result.unwrap();
+        assert_eq!(sinks.len(), 2);
+        assert_eq!(sinks[0].name, "MiracastTest");
+        assert_eq!(sinks[0].address, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(sinks[1].name, "OtherDevice");
+        assert_eq!(sinks[1].address, "11:22:33:44:55:66");
+    }
+
+    #[test]
+    fn test_discover_sinks_parse_output() {
+        let manager = P2pManager::new(P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        })
+        .unwrap();
+
+        let output = "NAME              DEVICE           MAC               BARS
+Samsung Device    p2p-samsung      FE:D2:F2:C3:BE:F1  ****
+Test TV           p2p-test-tv      12:34:56:78:90:AB  ***
+Invalid Device    p2p-invalid      badmacaddr         **
+";
+
+        let result = manager.parse_discovered_devices(output);
+        assert!(result.is_ok());
+
+        let sinks = result.unwrap();
+        assert_eq!(sinks.len(), 2);
+        assert_eq!(sinks[0].name, "Samsung");
+        assert_eq!(sinks[0].address, "FE:D2:F2:C3:BE:F1");
+        assert_eq!(sinks[1].name, "Test");
+        assert_eq!(sinks[1].address, "12:34:56:78:90:AB");
+    }
+
+    #[test]
+    fn test_discover_sinks_empty_result() {
+        let manager = P2pManager::new(P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        })
+        .unwrap();
+
+        let output = "NAME              DEVICE           MAC               BARS
+";
+
+        let result = manager.parse_discovered_devices(output);
+        assert!(result.is_ok());
+        let sinks = result.unwrap();
+        assert_eq!(sinks.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_sinks_parse_error() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // First rescan
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "wifi", "rescan"],
+            Ok(CommandOutput {
+                stdout: vec![],
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        // Then list command with non-utf8 output
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "wifi", "list", "--fields", "NAME,DEVICE,MAC,BARS"],
+            Ok(CommandOutput {
+                stdout: vec![0x80, 0x81, 0x82], // Invalid UTF-8
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let result = manager.discover_sinks(Duration::from_secs(10));
+
+        assert!(matches!(result.unwrap_err(), NetError::ParseError(_)));
+    }
+
+    #[test]
+    fn test_connect_success() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // First check if already connected
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "status"],
+            Ok(CommandOutput {
+                stdout: b"wlan0 p2p-wlan0 disconnected \neth0 ethernet --"
+                    .as_bytes()
+                    .to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        // Connect to device
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "wifi", "connect", "TestDevice"],
+            Ok(CommandOutput {
+                stdout: b"Device 'p2p-wlan0-0' successfully activated with '12345678-1234-1234-1234-123456789abc'.\n".as_bytes().to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        // Show to get IP address
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "show", "wlan0"],
+            Ok(CommandOutput {
+                stdout: b"GENERAL.DEVICE:                         p2p-wlan0-0
+GENERAL.TYPE:                           wifi-p2p
+GENERAL.STATE:                          connected
+IP4.ADDRESS[1]:                         192.168.1.100/24
+"
+                .as_bytes()
+                .to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let sink = Sink {
+            name: "TestDevice".to_string(),
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            ip_address: None,
+        };
+
+        let result = manager.connect(&sink);
+        assert!(result.is_ok());
+
+        let connection = result.unwrap();
+        assert_eq!(connection.get_sink().name, "TestDevice");
+        assert_eq!(
+            connection.get_sink().ip_address,
+            Some("192.168.1.100".to_string())
+        );
+    }
+
+    #[test]
+    fn test_connect_already_connected() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // First check if already connected - yes it is
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "status"],
+            Ok(CommandOutput {
+                stdout: b"wlan0 p2p-wlan0 connected WW:XX:YY:ZZ:00:11 \neth0 ethernet --"
+                    .as_bytes()
+                    .to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let sink = Sink {
+            name: "TestDevice".to_string(),
+            address: "WW:XX:YY:ZZ:00:11".to_string(),
+            ip_address: None,
+        };
+
+        let result = manager.connect(&sink);
+        assert!(matches!(
+            result.unwrap_err(),
+            NetError::NetworkManagerError(_)
+        ));
+    }
+
+    #[test]
+    fn test_connect_failure() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // First check if already connected
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "status"],
+            Ok(CommandOutput {
+                stdout: b"wlan0 p2p-wlan0 disconnected \neth0 ethernet --"
+                    .as_bytes()
+                    .to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        // Connect to device - will fail
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "wifi", "connect", "TestDevice"],
+            Ok(CommandOutput {
+                stdout: vec![],
+                stderr: b"Error: Failed to activate connection".as_bytes().to_vec(),
+                status: false,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let sink = Sink {
+            name: "TestDevice".to_string(),
+            address: "AA:BB:CC:DD:EE:FF".to_string(),
+            ip_address: None,
+        };
+
+        let result = manager.connect(&sink);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), NetError::CommandFailed(_)));
+    }
+
+    #[test]
+    fn test_disconnect_success() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // Disconnect
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "disconnect", "wlan0"],
+            Ok(CommandOutput {
+                stdout: b"Device 'wlan0' successfully disconnected.\n"
+                    .as_bytes()
+                    .to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let result = manager.disconnect();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_disconnect_failure() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // Disconnect - will fail
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "disconnect", "wlan0"],
+            Ok(CommandOutput {
+                stdout: vec![],
+                stderr: b"Error: Device not active".as_bytes().to_vec(),
+                status: false,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let result = manager.disconnect();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), NetError::CommandFailed(_)));
+    }
+
+    #[test]
+    fn test_get_ip_address_success() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // Show to get IP address
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "show", "wlan0"],
+            Ok(CommandOutput {
+                stdout: b"GENERAL.DEVICE:                         p2p-wlan0-0
+GENERAL.TYPE:                           wifi-p2p
+GENERAL.STATE:                          connected
+IP4.ADDRESS[1]:                         10.0.0.42/24
+"
+                .as_bytes()
+                .to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let result = manager.get_ip_address();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("10.0.0.42".to_string()));
+    }
+
+    #[test]
+    fn test_get_ip_address_none() {
+        let mut mock_runner = MockCommandRunner::new();
+
+        // Show to get IP address - no IP assigned
+        mock_runner.add_response(
+            "nmcli",
+            &["device", "show", "wlan0"],
+            Ok(CommandOutput {
+                stdout: b"GENERAL.DEVICE:                         p2p-wlan0-0\nGENERAL.TYPE:                           wifi-p2p\nGENERAL.STATE:                          connected\nIP4.ADDRESS[1]:                         -\n".as_bytes().to_vec(),
+                stderr: vec![],
+                status: true,
+            }),
+        );
+
+        let config = P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        };
+
+        let manager = P2pManager::new_with_command_runner(config, mock_runner).unwrap();
+        let result = manager.get_ip_address();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_net_error_display() {
+        let error = NetError::CommandFailed("test command failed".to_string());
+        let display = format!("{}", error);
+        assert!(display.contains("test command failed"));
+
+        let error = NetError::NetworkManagerError("network error".to_string());
+        let display = format!("{}", error);
+        assert!(display.contains("network error"));
+
+        let error = NetError::ConnectionTimeout;
+        let display = format!("{}", error);
+        assert!(display.contains("Connection timeout"));
+
+        let error = NetError::DeviceNotFound("device not found".to_string());
+        let display = format!("{}", error);
+        assert!(display.contains("device not found"));
+
+        let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "io test");
+        let error = NetError::IoError(io_error);
+        let display = format!("{}", error);
+        assert!(display.contains("io test"));
+
+        let error = NetError::ParseError("parse error".to_string());
+        let display = format!("{}", error);
+        assert!(display.contains("parse error"));
+    }
+
+    #[test]
+    fn test_net_error_from_io() {
+        let io_error =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let net_error: NetError = io_error.into();
+        assert!(matches!(net_error, NetError::IoError(_)));
+    }
+
+    #[test]
+    fn test_mac_address_validation() {
+        // In our implementation, MAC validation is done in parse_discovered_devices
+        let manager = P2pManager::new(P2pConfig {
+            interface_name: "wlan0".to_string(),
+            group_name: "test_group".to_string(),
+        })
+        .unwrap();
+
+        let valid_output = "NAME         DEVICE     MAC              BARS
+ValidDevice  p2p-valid  AA:BB:CC:DD:EE:FF  ****
+";
+
+        let result = manager.parse_discovered_devices(valid_output);
+        assert!(result.is_ok());
+        let sinks = result.unwrap();
+        assert_eq!(sinks.len(), 1); // Should be accepted
+
+        let invalid_output = "NAME         DEVICE       MAC             BARS
+InvalidDevice  p2p-invalid  BADMACADDR      ***
+";
+
+        let result = manager.parse_discovered_devices(invalid_output);
+        assert!(result.is_ok());
+        let sinks = result.unwrap();
+        assert_eq!(sinks.len(), 0); // Should be rejected
+    }
+}
+
+// Integration test that can optionally run with real nmcli
+#[cfg(all(test, feature = "integration"))]
+mod integration_tests {
+    use super::*;
+
+    #[test]
+    fn test_real_nmcli_commands() {
+        let runner = RealCommandRunner;
+
+        // Test nmcli device status - should run without error if nmcli is available
+        let output = runner.run("nmcli", &["device", "status"]);
+
+        match output {
+            Ok(_) => println!("Real nmcli command executed successfully"),
+            Err(e) => {
+                // We expect this to fail in CI or systems without nmcli,
+                // so just document that and exit gracefully
+                eprintln!("Integration test failed with real command: {}", e);
+                return; // Gracefully skip if nmcli not available
+            }
+        }
+    }
+}
