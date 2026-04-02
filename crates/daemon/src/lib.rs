@@ -153,10 +153,19 @@ impl Daemon {
         }
 
         let rtsp_addr = "0.0.0.0:7236";
-        self.rtsp_server = Some(RtspServer::new(rtsp_addr.to_string()));
+        let rtsp_server = RtspServer::new(rtsp_addr.to_string());
+        
+        let rtsp_server_clone = RtspServer::new(rtsp_addr.to_string());
+        tokio::spawn(async move {
+            if let Err(e) = rtsp_server_clone.start().await {
+                tracing::error!("RTSP server error: {:?}", e);
+            }
+        });
+        
+        self.rtsp_server = Some(rtsp_server);
         *self.state.write() = DaemonState::Streaming;
 
-        info!("RTSP negotiation completed");
+        info!("RTSP server started on {}", rtsp_addr);
         self.event_tx.send(DaemonEvent::Negotiated).ok();
 
         Ok(())
@@ -202,6 +211,9 @@ impl Daemon {
             return Err(anyhow::anyhow!("No active connection"));
         }
 
+        pipeline.start().await?;
+        info!("Stream pipeline started");
+        
         self.stream = Some(pipeline);
         info!("Stream pipeline configured");
         self.event_tx.send(DaemonEvent::StreamingStarted).ok();
@@ -278,6 +290,11 @@ impl Daemon {
                 .ok();
             return Err(e);
         }
+
+        info!("Streaming active, press Ctrl+C to stop...");
+        
+        tokio::signal::ctrl_c().await.ok();
+        info!("Received shutdown signal");
 
         let _ = self.stop_stream().await;
         let _ = self.disconnect().await;

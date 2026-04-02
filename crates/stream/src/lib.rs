@@ -251,7 +251,9 @@ impl StreamPipelineInner {
         // Create RTP payloader based on codec
         let rtp_pay = gst::ElementFactory::make(config.video_codec.rtp_payloader()).build()?;
 
-        let udpsink = gst::ElementFactory::make("udpsink").build()?;
+        let udpsink = gst::ElementFactory::make("udpsink")
+            .name("udpsink")
+            .build()?;
 
         // Set appsrc properties for live streaming
         appsrc.set_property("is-live", true);
