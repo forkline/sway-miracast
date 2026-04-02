@@ -153,6 +153,32 @@ All code follows the Rust style guidelines and includes comprehensive unit tests
 
 **Status: Alpha** - Components under active development, API subject to change
 
+### CI/CD
+
+This project uses automated CI/CD with GitHub Actions:
+
+- **Continuous Integration**: Automated testing, linting, and builds
+- **Auto-tagging**: Automatic version tagging from CHANGELOG.md
+- **Releases**: Automated GitHub releases with artifacts
+
+See [docs/workflows.md](docs/workflows.md) for CI/CD documentation.
+
+### Development Commands
+
+```bash
+# Show all available commands
+just --list
+
+# Run linting and tests
+just test
+
+# Run system diagnostics
+just doctor
+
+# Update changelog
+just update-changelog
+```
+
 ### Testing
 
 For detailed testing instructions, see [docs/TESTING.md](docs/TESTING.md).
