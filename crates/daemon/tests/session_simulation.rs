@@ -23,6 +23,7 @@ mod session_simulation {
             discovery_timeout: Duration::from_secs(5),
             interface: "wlan0".to_string(),
             preferred_sink: None,
+            force_client_mode: false,
         };
 
         let daemon = Daemon::with_config(config);

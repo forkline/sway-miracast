@@ -112,6 +112,7 @@ pub struct Sink {
     pub name: String,
     pub address: String,
     pub ip_address: Option<String>,
+    pub go_ip_address: Option<String>,
     pub rtsp_port: u16,
     pub wfd_capabilities: Option<String>,
 }
@@ -150,6 +151,13 @@ pub enum NetError {
 pub struct P2pConnection {
     pub sink: Sink,
     pub interface: String,
+}
+
+#[derive(Debug, Clone)]
+struct GroupStartedInfo {
+    interface_name: String,
+    ip_address: String,
+    go_ip_address: String,
 }
 
 pub struct P2pManager {
@@ -308,6 +316,7 @@ impl P2pManager {
                     name: name.clone(),
                     address: hw_address.clone(),
                     ip_address: None,
+                    go_ip_address: None,
                     rtsp_port: parse_wfd_rtsp_port(&wfd_ies),
                     wfd_capabilities: Some(parse_wfd_capabilities(&wfd_ies)),
                 });
@@ -354,14 +363,13 @@ impl P2pManager {
         );
 
         // WFD Device Information Subelement (Wi-Fi Display spec Table 4)
-        // Format: [Subelement ID] [Length] [Device Info] [RTSP Port] [Throughput] [Coupled Sink]
+        // Format: [Subelement ID] [Length] [Device Info: 2 bytes] [RTSP Port] [Throughput]
         let wfd_ies: Vec<u8> = vec![
-            0x00,                   // Subelement ID: WFD Device Information
-            0x00, 0x06,             // Length: 6 bytes
-            0x05,                   // Device Info: Source (00) + Session Available (bit 2) + WFD Enabled (bit 0)
-            0x1C, 0x44,             // RTSP Port: 7236 (big-endian)
-            0x00, 0xC8,             // Max Throughput: 200 Mbps
-            0x00,                   // Coupled Sink Status: none
+            0x00, // Subelement ID: WFD Device Information
+            0x00, 0x06, // Length: 6 bytes
+            0x00, 0x05, // Device Info: source capabilities
+            0x1C, 0x44, // RTSP Port: 7236 (big-endian)
+            0x00, 0xC8, // Max Throughput: 200 Mbps
         ];
         wifi_p2p_props.insert(
             "wfd-ies",
@@ -402,12 +410,34 @@ impl P2pManager {
             active_conn_path
         );
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // The TV only keeps the P2P group alive briefly if RTSP negotiation does not start.
+        // Prefer the wpa_supplicant group-start event so we can connect immediately.
+        tracing::info!("Waiting for P2P group IP information...");
+        let group_started = self.wait_for_group_started().await;
 
-        let ip_address = self.get_device_ip_address().await.unwrap_or_else(|e| {
-            tracing::warn!("Failed to get IP address: {}, using fallback", e);
-            "192.168.10.1".to_string()
-        });
+        let (ip_address, go_ip_address, interface_name) = if let Some(group_started) = group_started
+        {
+            (
+                group_started.ip_address,
+                Some(group_started.go_ip_address),
+                group_started.interface_name,
+            )
+        } else {
+            tracing::warn!("Did not observe P2P-GROUP-STARTED in wpa_supplicant logs; falling back to NetworkManager IP lookup");
+
+            let ip_address = match self.get_ip_from_active_connection(&active_conn_path).await {
+                Ok(ip) => ip,
+                Err(_) => match self.get_device_ip_address().await {
+                    Ok(ip) => ip,
+                    Err(_) => self.find_p2p_interface_ip().unwrap_or_else(|| {
+                        tracing::warn!("Could not find P2P interface IP, using fallback");
+                        "192.168.49.10".to_string()
+                    }),
+                },
+            };
+
+            (ip_address, None, self.config.interface_name.clone())
+        };
 
         tracing::info!("Got IP address: {}", ip_address);
 
@@ -415,13 +445,77 @@ impl P2pManager {
             name: sink.name.clone(),
             address: sink.address.clone(),
             ip_address: Some(ip_address),
+            go_ip_address,
             rtsp_port: sink.rtsp_port,
             wfd_capabilities: sink.wfd_capabilities.clone(),
         };
 
         Ok(P2pConnection {
             sink: connected_sink,
-            interface: self.config.interface_name.clone(),
+            interface: interface_name,
+        })
+    }
+
+    async fn wait_for_group_started(&self) -> Option<GroupStartedInfo> {
+        use std::process::Command;
+
+        for _ in 0..20 {
+            let output = Command::new("journalctl")
+                .args([
+                    "-u",
+                    "wpa_supplicant",
+                    "--since",
+                    "5 seconds ago",
+                    "--no-pager",
+                    "-o",
+                    "cat",
+                ])
+                .output()
+                .ok()?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Some(info) = stdout
+                .lines()
+                .rev()
+                .find_map(Self::parse_group_started_line)
+            {
+                tracing::info!(
+                    "Observed P2P group start on {} with local {} and GO {}",
+                    info.interface_name,
+                    info.ip_address,
+                    info.go_ip_address
+                );
+                return Some(info);
+            }
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        None
+    }
+
+    fn parse_group_started_line(line: &str) -> Option<GroupStartedInfo> {
+        let marker = "P2P-GROUP-STARTED ";
+        let start = line.find(marker)? + marker.len();
+        let data = &line[start..];
+        let interface_name = data.split_whitespace().next()?.to_string();
+        let ip_address = data
+            .split("ip_addr=")
+            .nth(1)?
+            .split_whitespace()
+            .next()?
+            .to_string();
+        let go_ip_address = data
+            .split("go_ip_addr=")
+            .nth(1)?
+            .split_whitespace()
+            .next()?
+            .to_string();
+
+        Some(GroupStartedInfo {
+            interface_name,
+            ip_address,
+            go_ip_address,
         })
     }
 
@@ -473,6 +567,100 @@ impl P2pManager {
         Err(NetError::NetworkManagerError(
             "No IP address assigned".into(),
         ))
+    }
+
+    async fn get_ip_from_active_connection(
+        &self,
+        active_conn_path: &zvariant::OwnedObjectPath,
+    ) -> Result<String, NetError> {
+        // Get the active connection's IP4 config
+        let active_conn_proxy = zbus::Proxy::new(
+            &self.connection,
+            "org.freedesktop.NetworkManager",
+            active_conn_path.as_str(),
+            "org.freedesktop.NetworkManager.Connection.Active",
+        )
+        .await?;
+
+        for _ in 0..20 {
+            // Try to get IP4Config from active connection
+            if let Ok(ip4_config_path) = active_conn_proxy
+                .get_property::<zvariant::OwnedObjectPath>("Ip4Config")
+                .await
+            {
+                if ip4_config_path.as_str() != "/" {
+                    let ip4_config = IP4ConfigProxy::builder(&self.connection)
+                        .path(ip4_config_path)?
+                        .build()
+                        .await?;
+
+                    if let Ok(addresses) = ip4_config.addresses().await {
+                        if let Some((addr, _, _)) = addresses.first() {
+                            let ip = u32::from_be(*addr);
+                            let ip_str = format!(
+                                "{}.{}.{}.{}",
+                                (ip >> 24) & 0xFF,
+                                (ip >> 16) & 0xFF,
+                                (ip >> 8) & 0xFF,
+                                ip & 0xFF
+                            );
+                            tracing::debug!("Got IP from active connection: {}", ip_str);
+                            return Ok(ip_str);
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        Err(NetError::NetworkManagerError(
+            "No IP from active connection".into(),
+        ))
+    }
+
+    fn find_p2p_interface_ip(&self) -> Option<String> {
+        // Try to find the dynamically created p2p interface and read its IPv4 address.
+        use std::process::Command;
+
+        let output = Command::new("ip")
+            .args(["-4", "-o", "addr", "show"])
+            .output()
+            .ok()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 && (parts[1].starts_with("p2p-") || parts[1] == "p2p0") {
+                if let Some(ip) = parts[3].split('/').next() {
+                    tracing::debug!("Found P2P IP on {}: {}", parts[1], ip);
+                    return Some(ip.to_string());
+                }
+            }
+        }
+
+        // Fallback: check specific p2p interfaces
+        for iface in &["p2p0", "p2p-wlp2s0-0", "p2p-wlp2s0-1"] {
+            let output = Command::new("ip")
+                .args(["-4", "addr", "show", iface])
+                .output()
+                .ok()?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("inet ") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if let Some(addr) = parts.get(1) {
+                        if let Some(ip) = addr.split('/').next() {
+                            tracing::debug!("Found IP on {}: {}", iface, ip);
+                            return Some(ip.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     pub async fn disconnect(&self) -> Result<(), NetError> {
@@ -539,13 +727,31 @@ fn parse_wfd_capabilities(wfd_ies: &[u8]) -> String {
 }
 
 pub fn parse_wfd_rtsp_port(wfd_ies: &[u8]) -> u16 {
-    // WFD Device Information: byte 1-2 (after device type byte) is RTSP port
-    // Format: 01 XX XX ... where XX XX is the port
-    if wfd_ies.len() >= 3 {
-        ((wfd_ies[1] as u16) << 8) | (wfd_ies[2] as u16)
-    } else {
-        7236 // Default
+    const DEFAULT_RTSP_PORT: u16 = 7236;
+
+    // WFD Device Information Subelement format:
+    // Byte 0: Subelement ID (0x00 for WFD Device Information)
+    // Bytes 1-2: Length (big-endian, 0x0006)
+    // Bytes 3-4: WFD Device Information
+    // Bytes 5-6: Session Management Control Port (RTSP)
+    // Bytes 7-8: WFD Device Maximum Throughput
+    if wfd_ies.len() >= 9 && wfd_ies[0] == 0x00 {
+        let declared_len = ((wfd_ies[1] as u16) << 8) | (wfd_ies[2] as u16);
+        if declared_len >= 6 {
+            return ((wfd_ies[5] as u16) << 8) | (wfd_ies[6] as u16);
+        }
     }
+
+    // Tolerate older malformed single-byte-device-info payloads while we migrate tests.
+    if wfd_ies.len() >= 6 && wfd_ies[0] == 0x00 {
+        return ((wfd_ies[4] as u16) << 8) | (wfd_ies[5] as u16);
+    }
+
+    if wfd_ies.len() >= 3 {
+        return ((wfd_ies[1] as u16) << 8) | (wfd_ies[2] as u16);
+    }
+
+    DEFAULT_RTSP_PORT
 }
 
 #[cfg(test)]
@@ -554,25 +760,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_wfd_rtsp_port() {
-        // Test with standard LG TV format: first byte is 01 (device type = sink),
-        // bytes 1-2 (0x13, 0x1c) are the port in big-endian = 4892
-        let lg_tv_wfd_ies = vec![0x01, 0x13, 0x1c]; // LG TV with port 4892
-        assert_eq!(parse_wfd_rtsp_port(&lg_tv_wfd_ies), 4892);
+        // Test with LG TV WFD IEs: full WFD Device Information subelement
+        // Format: [Subelement ID, Length, Device Info (2 bytes), RTSP Port, Throughput]
+        let lg_tv_wfd_ies = vec![0x00, 0x00, 0x06, 0x01, 0x13, 0x1c, 0x44, 0x00, 0x32];
+        assert_eq!(parse_wfd_rtsp_port(&lg_tv_wfd_ies), 7236);
 
-        // Test with another port value - 7236 (our default)
-        let standard_wfd_ies = vec![0x01, 0x1c, 0x44];  
+        // Test with spec-compliant source advertisement using default port 7236 (0x1C44)
+        let standard_wfd_ies = vec![0x00, 0x00, 0x06, 0x00, 0x05, 0x1C, 0x44, 0x00, 0xC8];
         assert_eq!(parse_wfd_rtsp_port(&standard_wfd_ies), 7236);
 
+        // Accept the older malformed single-byte device-info layout while migrating callers.
+        let legacy_wfd_ies = vec![0x00, 0x00, 0x06, 0x05, 0x1C, 0x44];
+        assert_eq!(parse_wfd_rtsp_port(&legacy_wfd_ies), 7236);
+
         // Test with insufficient bytes - should return default
-        let short_wfd_ies = vec![0x01, 0x13]; 
+        let short_wfd_ies = vec![0x00, 0x00];
         assert_eq!(parse_wfd_rtsp_port(&short_wfd_ies), 7236);
 
-        // Test with empty bytes - should return default  
+        // Test with empty bytes - should return default
         let empty_wfd_ies: Vec<u8> = vec![];
         assert_eq!(parse_wfd_rtsp_port(&empty_wfd_ies), 7236);
 
-        // Additional comprehensive test
-        let custom_port = vec![0x01, 0x08, 0xae]; // Custom port: 0x08ae = 2222
+        // Additional test with custom port
+        let custom_port = vec![0x00, 0x00, 0x06, 0x00, 0x05, 0x08, 0xae, 0x00, 0xc8];
         assert_eq!(parse_wfd_rtsp_port(&custom_port), 2222);
     }
 
@@ -633,24 +843,24 @@ mod tests {
         // Format according to Wi-Fi Display specification:
         // Byte 0: Subelement ID = 0x00 (WFD Device Information)
         // Bytes 1-2: Length = 6 bytes
-        // Byte 3: Device Type (bits 1:0): 0x01 = WFD Source + Session Available bit
-        // Bytes 4-5: Session Management Control Port = 7236 (0x1C44)
-        // Bytes 6-7: WFD Device Maximum Throughput
+        // Bytes 3-4: WFD Device Information
+        // Bytes 5-6: Session Management Control Port = 7236 (0x1C44)
+        // Bytes 7-8: WFD Device Maximum Throughput
         let wfd_ies_expected = vec![
             0x00, // Subelement ID: WFD Device Information
-            0x00, 0x06, // Length: 6 bytes (in little endian format as per spec: 0x006=6)
-            0x01, // Device Type: Source + Session Available
+            0x00, 0x06, // Length: 6 bytes
+            0x00, 0x05, // Device Info: source capabilities
             0x1C, 0x44, // RTSP Port: 7236 (big-endian = 0x1C44 = 7236 decimal)
-            0x00, 0x00, // Max Throughput: 0 (unlimited)
+            0x00, 0xC8, // Max Throughput: 200 Mbps
         ];
 
         // Construct the same vector as done in the connect method
         let wfd_ies_actual = vec![
             0x00, // Subelement ID: WFD Device Information
             0x00, 0x06, // Length: 6 bytes
-            0x01, // Device Type: Source (bits 1:0=00) + Session Available (bit 2=1)
+            0x00, 0x05, // Device Info: source capabilities
             0x1C, 0x44, // RTSP Port: 7236 (big-endian)
-            0x00, 0x00, // Max Throughput: 0 (unlimited)
+            0x00, 0xC8, // Max Throughput: 200 Mbps
         ];
 
         assert_eq!(wfd_ies_expected, wfd_ies_actual);
@@ -659,9 +869,10 @@ mod tests {
         assert_eq!(wfd_ies_actual[0], 0x00); // Subelement ID
         assert_eq!(wfd_ies_actual[1], 0x00); // Length byte 1
         assert_eq!(wfd_ies_actual[2], 0x06); // Length byte 2 (total 6 bytes following)
-        assert_eq!(wfd_ies_actual[3], 0x01); // Device type (Source + available)
-        assert_eq!(wfd_ies_actual[4], 0x1C); // RTSP port high byte
-        assert_eq!(wfd_ies_actual[5], 0x44); // RTSP port low byte
+        assert_eq!(wfd_ies_actual[3], 0x00); // Device info byte 1
+        assert_eq!(wfd_ies_actual[4], 0x05); // Device info byte 2
+        assert_eq!(wfd_ies_actual[5], 0x1C); // RTSP port high byte
+        assert_eq!(wfd_ies_actual[6], 0x44); // RTSP port low byte
     }
 
     #[tokio::test]

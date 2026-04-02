@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -734,11 +735,20 @@ impl RtspMessage {
                 let mut params = Vec::new();
 
                 // Look for WFD parameters in the message body
+                // GET_PARAMETER can have:
+                // 1. Parameters with values (format: "wfd_video_formats: value")
+                // 2. Just parameter names (format: "wfd_video_formats") when querying
                 for line in lines.iter() {
-                    if line.contains("wfd_") && line.contains(':') {
-                        let param_parts: Vec<&str> = line.splitn(2, ':').collect();
-                        if param_parts.len() == 2 {
-                            params.push(param_parts[0].trim().to_string());
+                    if line.contains("wfd_") {
+                        if line.contains(':') {
+                            // Parameter with potential value
+                            let param_parts: Vec<&str> = line.splitn(2, ':').collect();
+                            if !param_parts.is_empty() {
+                                params.push(param_parts[0].trim().to_string());
+                            }
+                        } else {
+                            // Just parameter name without value (query format)
+                            params.push(line.trim().to_string());
                         }
                     }
                 }
@@ -858,11 +868,40 @@ pub struct RtspClient {
 
 impl RtspClient {
     /// Connect to a Miracast sink's RTSP server
-    pub async fn connect(server_ip: &str, port: u16) -> Result<Self, RtspError> {
+    pub async fn connect(
+        server_ip: &str,
+        port: u16,
+        local_ip: Option<&str>,
+    ) -> Result<Self, RtspError> {
         let addr = format!("{}:{}", server_ip, port);
-        let stream = TcpStream::connect(&addr).await?;
+        tracing::info!("Connecting RTSP client to {}", addr);
+        let remote_ip: IpAddr = server_ip.parse().map_err(|err| {
+            RtspError::ProtocolViolation(format!("Invalid RTSP server IP {}: {}", server_ip, err))
+        })?;
+        let remote_addr = SocketAddr::new(remote_ip, port);
+        let stream = if let Some(local_ip) = local_ip {
+            let local_ip: IpAddr = local_ip.parse().map_err(|err| {
+                RtspError::ProtocolViolation(format!(
+                    "Invalid RTSP client bind IP {}: {}",
+                    local_ip, err
+                ))
+            })?;
+            let bind_addr = SocketAddr::new(local_ip, 0);
+            let socket = match remote_ip {
+                IpAddr::V4(_) => TcpSocket::new_v4()?,
+                IpAddr::V6(_) => TcpSocket::new_v6()?,
+            };
 
-        stream.set_nodelay(true).map_err(|e| RtspError::Io(e))?;
+            tracing::debug!("Binding RTSP client socket to {}", bind_addr);
+            socket.bind(bind_addr)?;
+            socket.connect(remote_addr).await?
+        } else {
+            TcpStream::connect(remote_addr).await?
+        };
+
+        stream.set_nodelay(true).map_err(RtspError::Io)?;
+
+        tracing::debug!("Connected RTSP TCP socket to {}", addr);
 
         Ok(RtspClient {
             server_addr: addr,
@@ -872,11 +911,19 @@ impl RtspClient {
         })
     }
 
+    fn control_uri(&self) -> String {
+        format!("rtsp://{}/wfd1.0", self.server_addr)
+    }
+
+    fn stream_uri(&self) -> String {
+        format!("{}/streamid=0", self.control_uri())
+    }
+
     /// Send OPTIONS request to query available commands
     pub async fn send_options(&mut self) -> Result<String, RtspError> {
         self.cseq += 1;
         let request = format!(
-            "OPTIONS * RTSP/1.0\r\nCSeq: {}\r\nUser-Agent: swaybeam/1.0\r\n\r\n",
+            "OPTIONS * RTSP/1.0\r\nCSeq: {}\r\nRequire: org.wfa.wfd1.0\r\nUser-Agent: swaybeam/1.0\r\n\r\n",
             self.cseq
         );
 
@@ -892,45 +939,47 @@ impl RtspClient {
         params: &[&str],
     ) -> Result<HashMap<String, String>, RtspError> {
         self.cseq += 1;
-        
+
         if params.is_empty() {
             return Ok(HashMap::new());
         }
-        
+
         let mut body = String::new();
         for param in params {
-            body.push_str(&format!("{}: \r\n", param));  // Empty value because this is a query
+            body.push_str(param);
+            body.push_str("\r\n");
         }
-        
+
         let mut request_parts = vec![
-            format!("GET_PARAMETER RTSP/1.0"),
+            format!("GET_PARAMETER {} RTSP/1.0", self.control_uri()),
             format!("CSeq: {}", self.cseq),
+            String::from("Content-Type: text/parameters"),
             format!("Content-Length: {}", body.len()),
         ];
-        
+
         // Only add Session header if we have one already established
         if let Some(ref session_id) = self.session_id {
             request_parts.insert(2, format!("Session: {}", session_id));
         }
-        
+
         request_parts.push(String::from(""));
         request_parts.push(body);
-        
+
         let request = request_parts.join("\r\n");
         self.send_request(request).await?;
         let response = self.read_response().await?;
-        
+
         // Parse the response to extract capabilities
         let mut capabilities = HashMap::new();
         let lines: Vec<&str> = response.lines().collect();
-        
+
         for line in lines {
             if line.contains(':') {
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
                 if parts.len() == 2 {
                     let param = parts[0].trim();
                     let value = parts[1].trim();
-                    
+
                     // Only collect WFD-specific parameters from the body
                     if param.starts_with("wfd_") && !param.to_lowercase().starts_with("cseq") {
                         capabilities.insert(param.to_string(), value.to_string());
@@ -938,7 +987,7 @@ impl RtspClient {
                 }
             }
         }
-        
+
         Ok(capabilities)
     }
 
@@ -948,70 +997,74 @@ impl RtspClient {
         params: &HashMap<String, String>,
     ) -> Result<(), RtspError> {
         self.cseq += 1;
-        
+
         if params.is_empty() {
             return Ok(());
         }
-        
+
         let mut body = String::new();
         for (key, value) in params {
             body.push_str(&format!("{}: {}\r\n", key, value));
         }
-        
+
         let mut request_parts = vec![
-            format!("SET_PARAMETER RTSP/1.0"),
+            format!("SET_PARAMETER {} RTSP/1.0", self.control_uri()),
             format!("CSeq: {}", self.cseq),
+            String::from("Content-Type: text/parameters"),
             format!("Content-Length: {}", body.len()),
         ];
-        
+
         // Only add Session header if we have one already established
         if let Some(ref session_id) = self.session_id {
             request_parts.insert(2, format!("Session: {}", session_id));
         }
-        
+
         request_parts.push(String::from(""));
         request_parts.push(body);
-        
+
         let request = request_parts.join("\r\n");
         self.send_request(request).await?;
         let _ = self.read_response().await?;
-        
+
         Ok(())
     }
 
     /// Send SETUP to establish RTP session
     pub async fn send_setup(&mut self, rtp_port: u16) -> Result<SetupResult, RtspError> {
         self.cseq += 1;
-        
-        let transport_header = format!("Transport: RTP/AVP/UDP;unicast;client_port={}", rtp_port);
-        
+
+        let transport_header = format!(
+            "Transport: RTP/AVP/UDP;unicast;client_port={}-{}",
+            rtp_port,
+            rtp_port + 1
+        );
+
         let mut request_parts = vec![
-            format!("SETUP RTSP/1.0"),
+            format!("SETUP {} RTSP/1.0", self.stream_uri()),
             format!("CSeq: {}", self.cseq),
             transport_header,
         ];
-        
+
         // Only add Session header if we have one already established
         if let Some(ref session_id) = self.session_id {
             request_parts.insert(2, format!("Session: {}", session_id));
-        }        
-        
+        }
+
         request_parts.push(String::from(""));
-        
+
         let request = request_parts.join("\r\n");
         self.send_request(request).await?;
         let response = self.read_response().await?;
-        
+
         // Parse response to extract session id and port information
         let lines: Vec<&str> = response.lines().collect();
         let mut session_id = String::new();
-        let destination_addr = String::from("0.0.0.0");  // Keep, but remove mut
         let mut server_rtp_port = 5004u16; // default RTP port
         let mut timeout: u32 = 30; // default timeout
-        
+
         for line in lines {
             let lower_line = line.to_lowercase();
-            
+
             if lower_line.starts_with("session:") {
                 let session_parts: Vec<&str> = line.splitn(2, ':').collect();
                 if session_parts.len() >= 2 {
@@ -1019,7 +1072,7 @@ impl RtspClient {
                     let session_and_params = session_parts[1].trim();
                     let session_components: Vec<&str> = session_and_params.split(';').collect();
                     session_id = session_components[0].trim().to_string();
-                    
+
                     for &component in session_components.iter().skip(1) {
                         if component.trim().starts_with("timeout=") {
                             let timeout_str = component.split('=').nth(1).unwrap_or("30").trim();
@@ -1035,27 +1088,34 @@ impl RtspClient {
                 if transport_lower.contains("server_port=") {
                     let server_port_start = transport_lower.find("server_port=").unwrap();
                     let server_port_section = &transport_lower[server_port_start + 12..];
-                    
+
                     // Look for the portion before any semicolon or comma that might separate additional params
-                    let server_port_end = server_port_section.find(|c| c == ';' || c == ',').unwrap_or(server_port_section.len());
+                    let server_port_end = server_port_section
+                        .find([';', ','])
+                        .unwrap_or(server_port_section.len());
                     let server_port_raw = &server_port_section[..server_port_end].trim();
                     let server_port_clean = server_port_raw.split('-').next().unwrap_or("5004"); // Use first port if range
-                    
+
                     if let Ok(server_port) = server_port_clean.parse::<u16>() {
                         server_rtp_port = server_port;
                     }
                 }
             }
         }
-        
+
         // If session was established in response, store it
         if !session_id.is_empty() {
             self.session_id = Some(session_id.clone());
         }
-        
+
         // Use the server's IP address that we connected to
-        let server_ip = self.server_addr.split(':').next().unwrap_or("0.0.0.0").to_string();
-        
+        let server_ip = self
+            .server_addr
+            .split(':')
+            .next()
+            .unwrap_or("0.0.0.0")
+            .to_string();
+
         Ok(SetupResult {
             destination_ip: server_ip,
             destination_rtp_port: server_rtp_port,
@@ -1067,79 +1127,103 @@ impl RtspClient {
     /// Send PLAY to start streaming
     pub async fn send_play(&mut self) -> Result<(), RtspError> {
         self.cseq += 1;
-        
+
         if let Some(ref session_id) = self.session_id {
             let request = format!(
-                "PLAY RTSP/1.0\r\nCSeq: {}\r\nSession: {}\r\n\r\n",
+                "PLAY {} RTSP/1.0\r\nCSeq: {}\r\nSession: {}\r\nRange: npt=0-\r\n\r\n",
+                self.stream_uri(),
                 self.cseq,
                 session_id
             );
-            
+
             self.send_request(request).await?;
             let _ = self.read_response().await?;
-            
+
             Ok(())
         } else {
-            Err(RtspError::ProtocolViolation("No active session".to_string()))
+            Err(RtspError::ProtocolViolation(
+                "No active session".to_string(),
+            ))
         }
     }
-    
+
     async fn send_request(&mut self, request: String) -> Result<(), RtspError> {
-        let stream = self.stream.as_mut()
+        let stream = self
+            .stream
+            .as_mut()
             .ok_or_else(|| RtspError::ProtocolViolation("No active connection".to_string()))?;
-        
-        stream.write_all(request.as_bytes()).await
+
+        tracing::debug!("Sending RTSP request to {}:\n{}", self.server_addr, request);
+
+        stream
+            .write_all(request.as_bytes())
+            .await
             .map_err(RtspError::Io)
     }
-    
+
     async fn read_response(&mut self) -> Result<String, RtspError> {
-        let stream = self.stream.as_mut()
+        let stream = self
+            .stream
+            .as_mut()
             .ok_or_else(|| RtspError::ProtocolViolation("No active connection".to_string()))?;
-        
+
         let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-        
+
         // Read response until we get an empty line (\r\n\r\n - indicating end of headers)
         let mut headers_content = String::new();
         let mut line = String::new();
         let mut headers_done = false;
-        
+
         // First: read headers
         loop {
             line.clear();
             let bytes_read = reader.read_line(&mut line).await?;
-            
+
             if bytes_read == 0 {
                 break; // EOF reached
             }
-            
+
             headers_content.push_str(&line);
-            
+
             // Check if the line is just \r\n (end of headers)
             if line.trim() == "" {
                 headers_done = true;
                 break;
             }
         }
-        
+
         // Compute content length from headers first
         let content_length = RtspClient::parse_content_length_static(&headers_content);
-        response = headers_content;
-        
+        let mut response = headers_content;
+
         if !headers_done {
+            tracing::debug!(
+                "Received partial RTSP response from {}:\n{}",
+                self.server_addr,
+                response
+            );
             return Ok(response);
         }
-        
+
         if content_length > 0 {
             // Read the specified number of bytes for the body
             let mut body_bytes = vec![0u8; content_length];
-            reader.read_exact(&mut body_bytes).await.map_err(RtspError::Io)?;
+            reader
+                .read_exact(&mut body_bytes)
+                .await
+                .map_err(RtspError::Io)?;
             response.push_str(&String::from_utf8_lossy(&body_bytes));
         }
-        
+
+        tracing::debug!(
+            "Received RTSP response from {}:\n{}",
+            self.server_addr,
+            response
+        );
+
         Ok(response)
     }
-    
+
     fn parse_content_length_static(response: &str) -> usize {
         for line in response.lines() {
             let lower_line = line.to_lowercase();
@@ -1155,10 +1239,6 @@ impl RtspClient {
             }
         }
         0
-    }
-    
-    fn parse_content_length(&self, response: &str) -> usize {
-        RtspClient::parse_content_length_static(response)
     }
 }
 
