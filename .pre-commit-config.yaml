@@ -20,6 +20,7 @@ repos:
     hooks:
       - id: yamllint
         args: ['-d', '{extends: default, rules: {document-start: disable, line-length: disable}}']
+        exclude: 'renovate\.json5'
 
   - repo: https://github.com/doublify/pre-commit-rust
     rev: v1.0
