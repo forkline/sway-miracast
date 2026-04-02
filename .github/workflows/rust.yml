@@ -43,6 +43,17 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v6
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            libpipewire-0.3-dev \
+            pkg-config
+
       - name: Install stable toolchain
         id: toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -61,6 +72,17 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v6
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            libpipewire-0.3-dev \
+            pkg-config
+
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -75,6 +97,17 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            libpipewire-0.3-dev \
+            pkg-config
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -101,10 +134,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            libpipewire-0.3-dev \
+            pkg-config
+
       - name: Install cross-compilation tools (for ARM targets)
         if: matrix.target != 'x86_64-unknown-linux-gnu'
         run: |
-          sudo apt-get update
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu
           elif [ "${{ matrix.target }}" = "armv7-unknown-linux-gnueabihf" ]; then
