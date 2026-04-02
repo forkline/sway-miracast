@@ -335,6 +335,14 @@ impl StreamPipelineInner {
     }
 }
 
+impl Drop for StreamPipelineInner {
+    fn drop(&mut self) {
+        if self.state != PipelineState::Null {
+            let _ = self.pipeline.set_state(gst::State::Null);
+        }
+    }
+}
+
 /// Inner type for encapsulating the GStreamer pipeline with a mutex
 pub struct StreamPipeline {
     inner: Arc<Mutex<StreamPipelineInner>>,

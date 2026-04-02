@@ -92,8 +92,8 @@ impl Daemon {
         self.state.read().clone()
     }
 
-    pub fn subscribe_events(&mut self) -> mpsc::UnboundedReceiver<DaemonEvent> {
-        self.event_rx.take().expect("Events receiver already taken")
+    pub fn subscribe_events(&mut self) -> Option<mpsc::UnboundedReceiver<DaemonEvent>> {
+        self.event_rx.take()
     }
 
     async fn run_doctor_checks(&self) -> anyhow::Result<DoctorReport> {

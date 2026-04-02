@@ -201,10 +201,6 @@ impl Capture {
         Err(CaptureError::PlatformNotSupported)
     }
 
-    pub fn config(&self) -> &CaptureConfig {
-        panic!("Only available on supported platforms")
-    }
-
     pub fn is_active(&self) -> bool {
         false
     }

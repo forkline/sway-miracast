@@ -828,20 +828,15 @@ async fn handle_get_parameter(
 ) -> String {
     let mut lock = sessions.write();
 
-    // Get the most recently created session as fallback
-    let maybe_session_id = { lock.keys().last().cloned() };
+    let maybe_session_id = lock.keys().last().cloned();
 
-    // If no session exists, return error
     if let Some(session_id) = maybe_session_id {
-        if let Some(mut session) = lock.get(&session_id).cloned() {
+        if let Some(session) = lock.get_mut(&session_id) {
             let param_refs: Vec<&str> = param_names.iter().map(|s| s.as_str()).collect();
             let response = match session.process_get_parameter(&param_refs) {
                 Ok(response) => response,
                 Err(_) => "".to_string(),
             };
-
-            // Update the session in storage
-            lock.insert(session_id, session);
 
             format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response)
         } else {
@@ -859,19 +854,14 @@ async fn handle_set_parameter(
 ) -> String {
     let mut lock = sessions.write();
 
-    // Get the most recently created session as fallback
-    let maybe_session_id = { lock.keys().last().cloned() };
+    let maybe_session_id = lock.keys().last().cloned();
 
-    // If no session exists, return error
     if let Some(session_id) = maybe_session_id {
-        if let Some(mut session) = lock.get(&session_id).cloned() {
+        if let Some(session) = lock.get_mut(&session_id) {
             let response = match session.process_set_parameter(&params) {
                 Ok(response) => response,
                 Err(_) => "200 OK\r\n".to_string(),
             };
-
-            // Update the session in storage
-            lock.insert(session_id, session);
 
             format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response)
         } else {
@@ -894,14 +884,11 @@ async fn handle_play(
 
     if let Some(session_id) = sess_id {
         let mut lock = sessions.write();
-        if let Some(mut session) = lock.remove(&session_id) {
+        if let Some(session) = lock.get_mut(&session_id) {
             let response = match session.process_play() {
                 Ok(response) => response,
                 Err(_) => "RTP-info: url=rtsp://server/, seq=123456\r\n".to_string(),
             };
-
-            // Put the updated session back in storage
-            lock.insert(session_id, session);
 
             format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response)
         } else {
