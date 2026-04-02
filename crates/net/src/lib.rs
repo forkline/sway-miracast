@@ -23,6 +23,17 @@ trait NetworkManager {
         device: zvariant::ObjectPath<'_>,
         specific_object: zvariant::ObjectPath<'_>,
     ) -> zbus::Result<(zvariant::OwnedObjectPath, zvariant::OwnedObjectPath)>;
+    async fn add_and_activate_connection2(
+        &self,
+        connection: HashMap<&str, HashMap<&str, zvariant::Value<'_>>>,
+        device: zvariant::ObjectPath<'_>,
+        specific_object: zvariant::ObjectPath<'_>,
+        options: HashMap<&str, zvariant::Value<'_>>,
+    ) -> zbus::Result<(
+        zvariant::OwnedObjectPath,
+        zvariant::OwnedObjectPath,
+        HashMap<String, zvariant::OwnedValue>,
+    )>;
 
     #[zbus(signal)]
     async fn device_added(&self, device_path: zvariant::OwnedObjectPath);
@@ -169,6 +180,11 @@ pub struct P2pManager {
 }
 
 impl P2pManager {
+    const GROUP_STARTED_POLL_ATTEMPTS: usize = 90;
+    const GROUP_STARTED_POLL_DELAY_MS: u64 = 500;
+    const P2P_INTERFACE_POLL_ATTEMPTS: usize = 40;
+    const P2P_INTERFACE_POLL_DELAY_MS: u64 = 250;
+
     pub async fn new(config: P2pConfig) -> Result<Self, NetError> {
         let connection = Connection::system().await?;
 
@@ -453,18 +469,41 @@ impl P2pManager {
 
         let mut ipv4_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
         ipv4_props.insert("method", zvariant::Value::Str(zvariant::Str::from("auto")));
+        ipv4_props.insert("never-default", zvariant::Value::Bool(true));
+
+        let mut ipv6_props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
+        ipv6_props.insert("method", zvariant::Value::Str(zvariant::Str::from("auto")));
+        ipv6_props.insert("never-default", zvariant::Value::Bool(true));
+        ipv6_props.insert("may-fail", zvariant::Value::Bool(true));
 
         let connection_config: HashMap<&str, HashMap<&str, zvariant::Value<'_>>> = HashMap::from([
             ("connection", connection_props),
             ("wifi-p2p", wifi_p2p_props),
             ("ipv4", ipv4_props),
+            ("ipv6", ipv6_props),
+        ]);
+
+        let activation_options: HashMap<&str, zvariant::Value<'_>> = HashMap::from([
+            (
+                "bind-activation",
+                zvariant::Value::Str(zvariant::Str::from("dbus-client")),
+            ),
+            (
+                "persist",
+                zvariant::Value::Str(zvariant::Str::from("volatile")),
+            ),
         ]);
 
         tracing::debug!("Connection config: {:?}", connection_config);
 
-        let (conn_path, active_conn_path) = self
+        let (conn_path, active_conn_path, _) = self
             .nm_proxy
-            .add_and_activate_connection(connection_config, device_obj_path, root_path)
+            .add_and_activate_connection2(
+                connection_config,
+                device_obj_path,
+                root_path,
+                activation_options,
+            )
             .await
             .map_err(|e| NetError::ConnectionFailed(format!("Failed to add connection: {}", e)))?;
 
@@ -529,7 +568,7 @@ impl P2pManager {
     async fn wait_for_group_started(&self) -> Option<GroupStartedInfo> {
         use std::process::Command;
 
-        for _ in 0..20 {
+        for _ in 0..Self::GROUP_STARTED_POLL_ATTEMPTS {
             let output = Command::new("journalctl")
                 .args([
                     "-u",
@@ -558,7 +597,7 @@ impl P2pManager {
                 return Some(info);
             }
 
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(Self::GROUP_STARTED_POLL_DELAY_MS)).await;
         }
 
         None
@@ -568,12 +607,12 @@ impl P2pManager {
         &self,
         preferred_interface: Option<&str>,
     ) -> Option<(String, String)> {
-        for _ in 0..24 {
+        for _ in 0..Self::P2P_INTERFACE_POLL_ATTEMPTS {
             if let Some(interface_info) = self.find_p2p_interface_address(preferred_interface) {
                 return Some(interface_info);
             }
 
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(Self::P2P_INTERFACE_POLL_DELAY_MS)).await;
         }
 
         None
@@ -618,7 +657,7 @@ impl P2pManager {
                 NetError::NetworkManagerError(format!("Failed to create device proxy: {}", e))
             })?;
 
-        for _ in 0..10 {
+        for _ in 0..90 {
             if let Ok(ip4_config_path) = device_proxy.ip4_config().await {
                 if ip4_config_path.as_str() != "/" {
                     let ip4_config = IP4ConfigProxy::builder(&self.connection)
@@ -667,7 +706,7 @@ impl P2pManager {
         )
         .await?;
 
-        for _ in 0..20 {
+        for _ in 0..90 {
             // Try to get IP4Config from active connection
             if let Ok(ip4_config_path) = active_conn_proxy
                 .get_property::<zvariant::OwnedObjectPath>("Ip4Config")
