@@ -263,7 +263,34 @@ pub fn check_wpa_supplicant() -> anyhow::Result<CheckResult> {
 }
 
 pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
-    let output = Command::new("pgrep").arg("xdg-desktop-portal").output();
+    // First try D-Bus which is more reliable
+    let dbus_check = Command::new("busctl").arg("--user").arg("list").output();
+
+    if let Ok(output) = dbus_check {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains("org.freedesktop.portal.Desktop") {
+                // Portal is running via D-Bus
+                if stdout.contains("xdg-desktop-portal-wlr") {
+                    return Ok(CheckResult::ok(
+                        "xdg-desktop-portal with WLR backend running",
+                    ));
+                } else if stdout.contains("xdg-desktop-portal-gtk") {
+                    return Ok(CheckResult::warn(
+                        "xdg-desktop-portal running with GTK backend (WLR backend preferred for Sway)",
+                    ));
+                } else {
+                    return Ok(CheckResult::ok("xdg-desktop-portal running"));
+                }
+            }
+        }
+    }
+
+    // Fallback to pgrep
+    let output = Command::new("pgrep")
+        .arg("-f")
+        .arg("xdg-desktop-portal")
+        .output();
 
     match output {
         Ok(o) if o.status.success() && !o.stdout.is_empty() => {
@@ -273,35 +300,14 @@ pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
                 Ok(w) if w.status.success() && !w.stdout.is_empty() => Ok(CheckResult::ok(
                     "xdg-desktop-portal with WLR backend running",
                 )),
-                _ => {
-                    let ps_output = Command::new("ps").arg("aux").output();
-                    if let Ok(ps) = ps_output {
-                        let stdout = String::from_utf8_lossy(&ps.stdout);
-                        if stdout.contains("xdg-desktop-portal") && !stdout.contains("wlr") {
-                            if stdout.contains("xdg-desktop-portal-gtk") {
-                                return Ok(CheckResult::warn("xdg-desktop-portal running but with GTK backend instead of WLR (may limit screen sharing features)"));
-                            } else {
-                                return Ok(CheckResult::warn(
-                                    "xdg-desktop-portal running but with unknown backend",
-                                ));
-                            }
-                        }
-                    }
-
-                    Ok(CheckResult::error("xdg-desktop-portal-wlr backend not running (required for screen sharing in Sway)"))
-                }
+                _ => Ok(CheckResult::warn(
+                    "xdg-desktop-portal running but WLR backend not detected",
+                )),
             }
         }
-        _ => {
-            let all_portals = Command::new("pgrep").arg("desktop-portal").output();
-
-            match all_portals {
-                Ok(ap) if ap.status.success() && !ap.stdout.is_empty() => {
-                    Ok(CheckResult::error("General xdg-desktop-portal found but xdg-desktop-portal-wlr backend not available (required for Sway)"))
-                },
-                _ => Ok(CheckResult::error("No xdg-desktop-portal services running (required for screen sharing)")),
-            }
-        }
+        _ => Ok(CheckResult::error(
+            "No xdg-desktop-portal services running (required for screen sharing)",
+        )),
     }
 }
 

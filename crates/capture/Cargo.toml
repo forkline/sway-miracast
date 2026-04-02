@@ -4,17 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-zbus = { workspace = true }
+zbus = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-zvariant = { workspace = true }
-pipewire = { workspace = true }
-libspa = { workspace = true }
+zvariant = { workspace = true, optional = true }
+libc = "0.2"
 
 [features]
-default = ["pipewire_support"]
-pipewire_support = []
-mock = []  # For testing without hardware
+default = []
+real_portal = ["dep:zbus", "dep:zvariant"]
