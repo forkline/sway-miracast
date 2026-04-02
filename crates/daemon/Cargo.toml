@@ -13,3 +13,8 @@ anyhow.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 parking_lot.workspace = true
+
+[dev-dependencies]
+pipewire.workspace = true
+gstreamer.workspace = true
+zbus.workspace = true
