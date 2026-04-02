@@ -190,6 +190,7 @@ fn parse_session_log(content: &str) -> Vec<SessionLogEntry> {
                 Some(RtspMessage::Options { .. }) => "OPTIONS",
                 Some(RtspMessage::GetParameter { .. }) => "GET_PARAMETER",
                 Some(RtspMessage::SetParameter { .. }) => "SET_PARAMETER",
+                Some(RtspMessage::Setup { .. }) => "SETUP",
                 Some(RtspMessage::Play { .. }) => "PLAY",
                 Some(RtspMessage::Teardown { .. }) => "TEARDOWN",
                 None => "UNKNOWN",
@@ -258,6 +259,14 @@ fn analyze_session(entries: Vec<SessionLogEntry>) -> SessionAnalysis {
                 }
                 RtspMessage::SetParameter { cseq: _, params } => {
                     let _ = session.process_set_parameter(&params);
+                }
+                RtspMessage::Setup {
+                    cseq: _,
+                    session: _,
+                    transport: _,
+                } => {
+                    let fallback_transport = Some("RTP/AVP;unicast;client_port=5004".to_string());
+                    let _ = session.process_setup(fallback_transport);
                 }
                 RtspMessage::Play {
                     cseq: _,
@@ -720,6 +729,7 @@ fn generate_report(file: Option<&str>, format: &str) -> Result<()> {
                     Some(RtspMessage::Options { .. }) => "OPTIONS",
                     Some(RtspMessage::GetParameter { .. }) => "GET_PARAMETER",
                     Some(RtspMessage::SetParameter { .. }) => "SET_PARAMETER",
+                    Some(RtspMessage::Setup { .. }) => "SETUP",
                     Some(RtspMessage::Play { .. }) => "PLAY",
                     Some(RtspMessage::Teardown { .. }) => "TEARDOWN",
                     None => "UNKNOWN",

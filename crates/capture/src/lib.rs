@@ -121,10 +121,10 @@ impl Capture {
         info!("Starting capture with config: {:?}", self.config);
 
         let stream = self.start_capture().await?;
-        let session_handle = stream.session_handle().to_string();  // Keep a copy to store
+        let session_handle = stream.session_handle().to_string(); // Keep a copy to store
 
         self.stream = Some(stream);
-        self.session_handle = Some(session_handle);  // Store session handle separately
+        self.session_handle = Some(session_handle); // Store session handle separately
         self.active = true;
         info!(
             "Capture started successfully with node ID: {}",

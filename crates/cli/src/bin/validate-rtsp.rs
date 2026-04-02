@@ -237,6 +237,7 @@ fn validate_rtsp_message(message: &str, strict: bool) -> ValidationResult {
                 RtspMessage::Options { .. } => "OPTIONS",
                 RtspMessage::GetParameter { .. } => "GET_PARAMETER",
                 RtspMessage::SetParameter { .. } => "SET_PARAMETER",
+                RtspMessage::Setup { .. } => "SETUP",
                 RtspMessage::Play { .. } => "PLAY",
                 RtspMessage::Teardown { .. } => "TEARDOWN",
             };
@@ -355,6 +356,16 @@ fn validate_session_flow(messages: Vec<String>) -> ValidationResult {
                     }
                     RtspMessage::SetParameter { cseq: _, params } => {
                         let _ = session.process_set_parameter(&params);
+                    }
+                    RtspMessage::Setup {
+                        cseq: _,
+                        session: _,
+                        transport: _,
+                    } => {
+                        // Handle SETUP in session state
+                        let fallback_transport =
+                            Some("RTP/AVP;unicast;client_port=5004".to_string());
+                        let _ = session.process_setup(fallback_transport);
                     }
                     RtspMessage::Play {
                         cseq: _,

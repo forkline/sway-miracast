@@ -22,6 +22,7 @@ mod session_simulation {
             video_bitrate: 8_000_000,
             discovery_timeout: Duration::from_secs(5),
             interface: "wlan0".to_string(),
+            preferred_sink: None,
         };
 
         let daemon = Daemon::with_config(config);

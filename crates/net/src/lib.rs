@@ -84,10 +84,10 @@ trait Device {
 
     #[zbus(property)]
     fn ip_interface(&self) -> zbus::Result<String>;
-    
+
     #[zbus(property)]
     fn ip4_config(&self) -> zbus::Result<zvariant::OwnedObjectPath>;
-    
+
     #[zbus(property)]
     fn active_connection(&self) -> zbus::Result<zvariant::OwnedObjectPath>;
 }
@@ -423,7 +423,9 @@ impl P2pManager {
             .path(device_path.clone())?
             .build()
             .await
-            .map_err(|e| NetError::NetworkManagerError(format!("Failed to create device proxy: {}", e)))?;
+            .map_err(|e| {
+                NetError::NetworkManagerError(format!("Failed to create device proxy: {}", e))
+            })?;
 
         for _ in 0..10 {
             if let Ok(ip4_config_path) = device_proxy.ip4_config().await {
@@ -432,7 +434,12 @@ impl P2pManager {
                         .path(ip4_config_path)?
                         .build()
                         .await
-                        .map_err(|e| NetError::NetworkManagerError(format!("Failed to create IP4Config proxy: {}", e)))?;
+                        .map_err(|e| {
+                            NetError::NetworkManagerError(format!(
+                                "Failed to create IP4Config proxy: {}",
+                                e
+                            ))
+                        })?;
 
                     if let Ok(addresses) = ip4_config.addresses().await {
                         if let Some((addr, _, _)) = addresses.first() {
@@ -451,7 +458,9 @@ impl P2pManager {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        Err(NetError::NetworkManagerError("No IP address assigned".into()))
+        Err(NetError::NetworkManagerError(
+            "No IP address assigned".into(),
+        ))
     }
 
     pub async fn disconnect(&self) -> Result<(), NetError> {

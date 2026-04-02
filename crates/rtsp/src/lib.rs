@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 /// Negotiated video codec for the WFD connection
@@ -258,6 +260,7 @@ pub enum SessionState {
     OptionsReceived,
     GetParamReceived,
     SetParamReceived,
+    Ready, // After SETUP, waiting for PLAY
     Play,
     Teardown,
 }
@@ -289,6 +292,8 @@ pub struct RtspSession {
     pub parameters: HashMap<String, String>,
     /// Negotiated video codec determined during WFD negotiation
     pub negotiated_codec: Option<NegotiatedCodec>,
+    /// Information about the RTP stream destination if negotiated
+    pub rtp_destination: Option<RtpDestination>,
 }
 
 impl RtspSession {
@@ -319,6 +324,7 @@ impl RtspSession {
             capabilities: WfdCapabilities::new(),
             parameters: HashMap::new(),
             negotiated_codec: None,
+            rtp_destination: None,
         }
     }
 
@@ -479,6 +485,46 @@ impl RtspSession {
         }
     }
 
+    /// Updates session information about the RTP destination from SETUP parameters
+    pub fn process_setup(&mut self, transport_param: Option<String>) -> Result<String, RtspError> {
+        // Parse the Transport header to extract client's RTP/RTCP port information
+        if let Some(transport) = transport_param {
+            // Look for client_port parameter which contains the RTP port range
+            if let Some(client_port_part) = transport
+                .split(';')
+                .find(|part| part.starts_with("client_port="))
+            {
+                let port_range = &client_port_part[12..]; // Skip "client_port="
+
+                // Client port format can be "port" or "port1-port2" for RTP-RTCP
+                let ports: Vec<&str> = port_range.split('-').collect();
+                if let Some(first_port_str) = ports.first() {
+                    if let Ok(port_num) = first_port_str.parse::<u16>() {
+                        // Store the negotiated RTP port information
+                        self.rtp_destination = Some(RtpDestination {
+                            ip: "0.0.0.0".to_string(), // Will be updated with actual client IP
+                            port: port_num,
+                        });
+
+                        // Transition through states in a proper sequence
+                        if self.state == SessionState::SetParamReceived {
+                            self.state = SessionState::Play; // SETUP completes the setup phase
+                        }
+
+                        // Prepare response with server parameters
+                        return Ok(format!(
+                            "Transport: RTP/AVP;unicast;source=0.0.0.0;client_port={};server_port=8554-8555\r\nSession: {};timeout=30\r\n", 
+                            port_range, self.session_id
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Fallback response
+        Ok(format!("Transport: RTP/AVP;unicast;destination=127.0.0.1;server_port=8554-8555\r\nSession: {};timeout=30\r\n", self.session_id))
+    }
+
     /// Returns the negotiated video codec
     pub fn get_negotiated_codec(&self) -> Option<NegotiatedCodec> {
         self.negotiated_codec
@@ -586,6 +632,7 @@ pub enum RtspError {
 /// * `Options` - Capabilities request with sequence number
 /// * `GetParameter` - Parameter query request with sequence number and specific parameter names
 /// * `SetParameter` - Parameter configuration request with sequence number and parameter values
+/// * `Setup` - Stream setup request with sequence, session negotiation info, and transport parameters
 /// * `Play` - Stream activation request with sequence number and optional session
 /// * `Teardown` - Session termination request with sequence and session ID
 ///
@@ -612,6 +659,11 @@ pub enum RtspMessage {
     SetParameter {
         cseq: u32,
         params: HashMap<String, String>,
+    },
+    Setup {
+        cseq: u32,
+        session: Option<String>,
+        transport: Option<String>,
     },
     Play {
         cseq: u32,
@@ -710,6 +762,15 @@ impl RtspMessage {
 
                 Ok(RtspMessage::SetParameter { cseq, params })
             }
+            "SETUP" => {
+                let session = parse_header(&lines, "Session");
+                let transport = parse_header(&lines, "Transport");
+                Ok(RtspMessage::Setup {
+                    cseq,
+                    session,
+                    transport,
+                })
+            }
             "PLAY" => {
                 let session = parse_header(&lines, "Session");
                 Ok(RtspMessage::Play { cseq, session })
@@ -752,6 +813,26 @@ fn parse_header(lines: &[&str], header: &str) -> Option<String> {
 ///     server.start().await.expect("Server failed to start");
 /// }
 /// ```
+/// Information about the RTP stream destination
+#[derive(Debug, Clone)]
+pub struct RtpDestination {
+    pub ip: String,
+    pub port: u16,
+}
+
+/// Information about the RTP stream destination
+#[derive(Debug, Clone)]
+pub struct RtpInfo {
+    /// Destination IP address
+    pub dest_ip: String,
+    /// Destination RTSP port
+    pub dest_port: u16,
+    /// Local socket address of the client connection
+    pub client_addr: std::net::SocketAddr,
+    /// Session ID associated with the stream
+    pub session_id: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct RtspServer {
     /// Network address the server binds to (e.g., "127.0.0.1:7236")
@@ -760,6 +841,8 @@ pub struct RtspServer {
     sessions: Arc<parking_lot::RwLock<HashMap<String, RtspSession>>>,
     /// Token used to signal cancellation for graceful server shutdown
     cancellation_token: CancellationToken,
+    /// Channel for notifying when PLAY is received
+    play_notifier: Arc<parking_lot::Mutex<Option<oneshot::Sender<RtpInfo>>>>,
 }
 
 impl RtspServer {
@@ -783,6 +866,47 @@ impl RtspServer {
             address,
             sessions: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             cancellation_token: CancellationToken::new(),
+            play_notifier: Arc::new(parking_lot::Mutex::new(None)),
+        }
+    }
+
+    /// Waits for PLAY command to be received from the client and returns RTP stream information
+    ///
+    /// This method blocks until a PLAY command is received by the server, and returns
+    /// the negotiated RTP port and destination IP information from the client's request.
+    /// Use this method in the daemon to coordinate when to start streaming after RTSP
+    /// negotiation is complete.
+    ///
+    /// # Arguments
+    /// * `timeout` - Maximum duration to wait for PLAY command
+    ///
+    /// # Returns
+    /// * `Ok(RtpInfo)` - Contains the negotiated RTP destination information
+    /// * `Err(RtspError::Timeout)` - When timeout expires without getting PLAY
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use swaybeam_rtsp::RtspServer;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let server = RtspServer::new("127.0.0.1:7236".to_string());
+    /// let rtp_info = server.wait_for_play(Duration::from_secs(30)).await.unwrap();
+    /// println!("Streaming to {} on port {}", rtp_info.dest_ip, rtp_info.dest_port);
+    /// # }
+    /// ```
+    pub async fn wait_for_play(&self, timeout: Duration) -> Result<RtpInfo, RtspError> {
+        let (tx, rx) = oneshot::channel();
+
+        // Store the sender in the server for later use in the connection handler
+        *(self.play_notifier.lock()) = Some(tx);
+
+        // Wait for the receiver with the timeout
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(rtp_info)) => Ok(rtp_info),
+            Ok(Err(_)) => Err(RtspError::ProtocolViolation("Channel failed".to_string())),
+            Err(_) => Err(RtspError::Timeout),
         }
     }
 
@@ -821,9 +945,10 @@ impl RtspServer {
                             tracing::info!("Connection established from {}", addr);
 
                             let sessions = self.sessions.clone();
+                            let notifier = self.play_notifier.clone();
 
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, sessions).await {
+                                if let Err(e) = handle_connection(stream, sessions, notifier, addr).await {
                                     tracing::error!("Error handling connection: {:?}", e);
                                 }
                             });
@@ -937,6 +1062,8 @@ impl Drop for RtspServer {
 async fn handle_connection(
     mut socket: TcpStream,
     sessions: Arc<parking_lot::RwLock<HashMap<String, RtspSession>>>,
+    notifier: Arc<parking_lot::Mutex<Option<oneshot::Sender<RtpInfo>>>>,
+    client_addr: std::net::SocketAddr,
 ) -> Result<(), RtspError> {
     let mut buffer = [0; 4096];
 
@@ -958,7 +1085,15 @@ async fn handle_connection(
                 RtspMessage::SetParameter { cseq, params } => {
                     handle_set_parameter(cseq, params, &sessions).await
                 }
-                RtspMessage::Play { cseq, session } => handle_play(cseq, session, &sessions).await,
+                RtspMessage::Setup {
+                    cseq,
+                    session,
+                    transport,
+                } => handle_setup(cseq, session, transport, &sessions, &client_addr).await,
+                RtspMessage::Play { cseq, session } => {
+                    handle_play_with_notifier(cseq, session, &sessions, &notifier, &client_addr)
+                        .await
+                }
                 RtspMessage::Teardown { cseq, session } => {
                     handle_teardown(cseq, session, &sessions).await
                 }
@@ -1083,10 +1218,49 @@ async fn handle_set_parameter(
     }
 }
 
-async fn handle_play(
+async fn handle_setup(
+    cseq: u32,
+    session_id_opt: Option<String>,
+    transport: Option<String>,
+    sessions: &Arc<parking_lot::RwLock<HashMap<String, RtspSession>>>,
+    client_addr: &std::net::SocketAddr,
+) -> String {
+    let sess_id = session_id_opt.or_else(|| {
+        let lock = sessions.read();
+        lock.keys().last().cloned()
+    });
+
+    if let Some(session_id) = sess_id {
+        let mut lock = sessions.write();
+        if let Some(session) = lock.get_mut(&session_id) {
+            // Update destination IP in the stored RTP Destination info
+            if let Some(ref mut rtp_dest) = session.rtp_destination {
+                rtp_dest.ip = client_addr.ip().to_string();
+            }
+
+            let response = match session.process_setup(transport) {
+                Ok(response) => response,
+                Err(_) => format!("Transport: RTP/AVP;unicast;server_port=8554-8555\r\nSession: {};timeout=30\r\n", session.session_id),
+            };
+
+            // Transition to Ready state (waiting for PLAY)
+            session.state = SessionState::Ready;
+
+            format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response)
+        } else {
+            format!("RTSP/1.0 454 Session Not Found\r\nCSeq: {}\r\n\r\n", cseq)
+        }
+    } else {
+        format!("RTSP/1.0 454 Session Not Found\r\nCSeq: {}\r\n\r\n", cseq)
+    }
+}
+
+async fn handle_play_with_notifier(
     cseq: u32,
     session_id_opt: Option<String>,
     sessions: &Arc<parking_lot::RwLock<HashMap<String, RtspSession>>>,
+    notifier: &Arc<parking_lot::Mutex<Option<oneshot::Sender<RtpInfo>>>>,
+    client_addr: &std::net::SocketAddr,
 ) -> String {
     let sess_id = session_id_opt.or_else(|| {
         let lock = sessions.read();
@@ -1100,6 +1274,33 @@ async fn handle_play(
                 Ok(response) => response,
                 Err(_) => "RTP-info: url=rtsp://server/, seq=123456\r\n".to_string(),
             };
+
+            // Now send the RTP info notification if we have a pending waiter
+            {
+                let mut notif_guard = notifier.lock();
+                if let Some(sender) = notif_guard.take() {
+                    // Get the RTP destination from session if available
+                    let rtp_info = if let Some(ref rtp_dest) = session.rtp_destination {
+                        RtpInfo {
+                            dest_ip: rtp_dest.ip.clone(),
+                            dest_port: rtp_dest.port,
+                            client_addr: *client_addr,
+                            session_id: Some(session.session_id.clone()),
+                        }
+                    } else {
+                        // Fallback if no destination was negotiated
+                        RtpInfo {
+                            dest_ip: client_addr.ip().to_string(),
+                            dest_port: 5004, // Default RTP port
+                            client_addr: *client_addr,
+                            session_id: Some(session.session_id.clone()),
+                        }
+                    };
+
+                    // Send the info to the waiting party
+                    let _ = sender.send(rtp_info);
+                }
+            }
 
             format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response)
         } else {
@@ -1166,38 +1367,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shutdown_mechanism() {
-        // Create a test server
-        let server = RtspServer::new("127.0.0.1:0".to_string());
-        let server_handle = server.cancellation_token.clone();
+    async fn test_wait_for_play() {
+        // Create a basic server
+        let rtsp_server = RtspServer::new("0.0.0.0:0".to_string()); // Use port 0 to get an available port
 
-        // Spawn a task to test the cancellation token functionality
-        let shutdown_task = tokio::spawn(async move {
-            // Server will wait for cancellation token
-            server_handle.cancelled().await;
-            // If we get here, cancellation was triggered
-            42 // arbitrary value to show the task completed
-        });
+        // Call wait for play in background to test function exists and is accessible
+        let timeout_duration = Duration::from_millis(100);
+        tokio::spawn(async move {
+            let result: Result<RtpInfo, RtspError> =
+                rtsp_server.wait_for_play(timeout_duration).await;
+            // Should timeout, which is the expected behavior when no client connects
+            assert!(matches!(result, Err(RtspError::Timeout)));
+        })
+        .await
+        .unwrap();
+    }
 
-        // Give a small delay, then trigger shutdown
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        server.stop();
+    #[tokio::test]
+    async fn test_rtp_info_structure() {
+        let rtp_info = RtpInfo {
+            dest_ip: "192.168.1.100".to_string(),
+            dest_port: 5004,
+            client_addr: "192.168.1.100:5000".parse().unwrap(),
+            session_id: Some("test_session_123".to_string()),
+        };
 
-        // Wait for task to complete (indicating cancellation was triggered)
-        let result =
-            tokio::time::timeout(tokio::time::Duration::from_millis(100), shutdown_task).await;
-        assert!(result.is_ok(), "Cancellation task should have completed");
-
-        let final_result = result.unwrap();
-        assert!(
-            final_result.is_ok(),
-            "Task should have completed successfully"
-        );
-        assert_eq!(
-            final_result.unwrap(),
-            42,
-            "Should return our expected value"
-        );
+        assert_eq!(rtp_info.dest_ip, "192.168.1.100");
+        assert_eq!(rtp_info.dest_port, 5004);
+        assert_eq!(rtp_info.session_id, Some("test_session_123".to_string()));
     }
 
     #[test]

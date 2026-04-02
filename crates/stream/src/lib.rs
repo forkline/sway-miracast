@@ -1,6 +1,6 @@
 use std::fmt;
 mod test_pattern;
-pub use test_pattern::{TestPatternGenerator, TestPatternConfig, Frame};
+pub use test_pattern::{Frame, TestPatternConfig, TestPatternGenerator};
 
 /// Possible video codecs supported by the stream
 #[derive(Debug, Clone, PartialEq)]

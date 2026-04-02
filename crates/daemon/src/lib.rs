@@ -9,7 +9,9 @@ use swaybeam_capture::Capture;
 use swaybeam_doctor::{check_all, Report as DoctorReport};
 use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
 use swaybeam_rtsp::RtspServer;
-use swaybeam_stream::{AudioCodec, StreamConfig, StreamPipeline, TestPatternConfig, TestPatternGenerator, VideoCodec};
+use swaybeam_stream::{
+    AudioCodec, StreamConfig, StreamPipeline, TestPatternConfig, TestPatternGenerator, VideoCodec,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DaemonState {
@@ -165,7 +167,6 @@ impl Daemon {
         });
 
         self.rtsp_server = Some(rtsp_server);
-        *self.state.write() = DaemonState::Streaming;
 
         info!("RTSP server started on {}", rtsp_addr);
         self.event_tx.send(DaemonEvent::Negotiated).ok();
@@ -174,9 +175,26 @@ impl Daemon {
     }
 
     pub async fn start_stream(&mut self) -> anyhow::Result<()> {
-        if self.get_state() != DaemonState::Streaming {
-            return Err(anyhow::anyhow!("Daemon must be in Streaming state"));
+        if self.get_state() != DaemonState::Negotiating
+            && self.get_state() != DaemonState::Streaming
+        {
+            return Err(anyhow::anyhow!(
+                "Daemon must be in Negotiating or Streaming state"
+            ));
         }
+
+        // Wait for PLAY command from the sink
+        let rtp_info = if let Some(ref rtsp_server) = self.rtsp_server {
+            rtsp_server
+                .wait_for_play(Duration::from_secs(30))
+                .await
+                .map_err(anyhow::Error::new)?
+        } else {
+            return Err(anyhow::anyhow!("No RTSP server available"));
+        };
+
+        // Update state only after receiving PLAY
+        *self.state.write() = DaemonState::Streaming;
 
         let stream_config = StreamConfig {
             video_codec: VideoCodec::H264,
@@ -192,22 +210,25 @@ impl Daemon {
 
         let pipeline = StreamPipeline::new(stream_config)?;
 
-        let sink_ip = if let Some(ref conn) = self.connection {
-            conn.get_sink().ip_address.clone()
-                .ok_or_else(|| anyhow::anyhow!("Sink has no IP address"))?
-        } else {
-            return Err(anyhow::anyhow!("No active connection"));
-        };
+        // Use the port negotiated in the RTSP PLAY command instead of hardcoded value
+        let sink_ip = rtp_info.dest_ip;
+        let sink_rtp_port = rtp_info.dest_port;
 
-        pipeline.set_output(&sink_ip, 5004).await?;
+        pipeline.set_output(&sink_ip, sink_rtp_port).await?;
         pipeline.start().await?;
-        info!("Stream pipeline started, sending to {}:5004", sink_ip);
+        info!(
+            "Stream pipeline started, sending to {}:{}",
+            sink_ip, sink_rtp_port
+        );
 
         let caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", "BGRA")
             .field("width", self.config.video_width as i32)
             .field("height", self.config.video_height as i32)
-            .field("framerate", gstreamer::Fraction::new(self.config.video_framerate as i32, 1))
+            .field(
+                "framerate",
+                gstreamer::Fraction::new(self.config.video_framerate as i32, 1),
+            )
             .build();
         pipeline.set_caps(&caps).await?;
 
@@ -371,6 +392,7 @@ mod tests {
             video_bitrate: 6_000_000,
             discovery_timeout: Duration::from_secs(5),
             interface: "wlan1".to_string(),
+            preferred_sink: None,
         };
 
         let daemon = Daemon::with_config(config);
