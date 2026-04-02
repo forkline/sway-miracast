@@ -43,15 +43,11 @@ jobs:
         run: |
           echo "PROJECT_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ./Cargo.toml | head -n1)" >> $GITHUB_ENV
 
-      - name: Clone swaybeam repository to get PKGBUILD templates
-        run: |
-          git clone https://github.com/forkline/swaybeam
-          cp swaybeam/.ci/generate-pkgbuild.rh ./
-
-      - name: Create PKGBUILD
+      - name: Generate PKGBUILD
         shell: bash
         run: |
-          .ci/generate-pkgbuild.rh ${{ matrix.package.pkgbuild }}
+          chmod +x .ci/generate-pkgbuild.sh
+          .ci/generate-pkgbuild.sh ${{ matrix.package.pkgbuild }}
 
       - name: Publish AUR package
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
