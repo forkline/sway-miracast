@@ -11,8 +11,13 @@ path = "src/main.rs"
 miracast-daemon = { path = "../daemon" }
 miracast-net = { path = "../net" }
 miracast-rtsp = { path = "../rtsp" }
+miracast-doctor = { path = "../doctor" }
+miracast-capture = { path = "../capture" }
+miracast-stream = { path = "../stream" }
 anyhow.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true
+clap = { version = "4.0", features = ["derive"] }
+tabled = "0.15"
+serde_json = "1.0"

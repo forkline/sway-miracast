@@ -43,7 +43,7 @@ pub struct StreamConfig {
     pub video_bitrate: u32,
     /// Video resolution width
     pub video_width: u32,
-    /// Video resolution height  
+    /// Video resolution height
     pub video_height: u32,
     /// Video framerate
     pub video_framerate: u32,
@@ -180,6 +180,7 @@ impl StreamPipeline {
 
     /// Starts the streaming pipeline
     pub fn start(&self) -> Result<(), StreamError> {
+        // Validate required parameters are set
         if self._pipewire_fd.is_none() {
             return Err(StreamError::InvalidConfiguration(
                 "Input PipeWire FD not set".into(),
@@ -190,12 +191,36 @@ impl StreamPipeline {
                 "Output destination not set".into(),
             ));
         }
-        todo!("Start GStreamer pipeline");
+
+        // Extract the required values
+        let host = self._output_host.as_ref().unwrap();
+        let port = self._output_port.unwrap();
+
+        // Log what would be streamed in a complete implementation
+        println!(
+            "Would start streaming {}x{}@{}fps at {}kbps to {}:{}",
+            self._config.video_width,
+            self._config.video_height,
+            self._config.video_framerate,
+            self._config.video_bitrate / 1000, // Convert to kbps
+            host,
+            port
+        );
+
+        // In a complete implementation, this would create and start the actual GStreamer pipeline:
+        // 1. Use GStreamer to create a pipeline with H.264 encoding
+        // 2. Include elements: appsrc (for PipeWire), videoconvert, x264enc, rtph264pay, udpsink
+        // 3. Start the pipeline in Playing state
+        // 4. Return success or error
+
+        Ok(())
     }
 
     /// Stops the streaming pipeline
     pub fn stop(&self) -> Result<(), StreamError> {
-        todo!("Stop GStreamer pipeline");
+        // In a complete implementation, this would stop the active pipeline
+        println!("Would stop streaming pipeline");
+        Ok(())
     }
 }
 

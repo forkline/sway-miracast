@@ -10,6 +10,6 @@ miracast-stream = { path = "../stream" }
 miracast-net = { path = "../net" }
 miracast-rtsp = { path = "../rtsp" }
 anyhow.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+parking_lot.workspace = true

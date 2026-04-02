@@ -7,4 +7,15 @@ edition.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# pipewire = "0.8"  # TODO: add when implementing actual capture
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+zbus = { workspace = true, features = ["tokio"] }
+rand = { workspace = true }
+zvariant = { workspace = true }
+
+[dependencies.pipewire]
+version = "0.8"
+optional = true
+
+[features]
+default = []
+dbus-integration = ["dep:pipewire"]

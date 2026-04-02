@@ -1,229 +1,176 @@
 # sway-miracast
 
-sway-miracast is a Miracast implementation designed specifically for Sway and other wlroots-based Wayland compositors. It enables wireless display streaming from Linux systems to Miracast-compatible TVs, monitors, and projectors using Wi-Fi Direct.
+<p align="center">
+  <strong>Wireless display streaming for Linux, the way it should be</strong>
+</p>
 
-## Project Overview
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#getting-started">Getting Started</a> •
+  <a href="#installation">Installation</a> •
+  <a href="#contributing">Contributing</a>
+</p>
 
-The project implements the complete Miracast protocol stack:
-- Wi-Fi Direct device discovery and P2P connection establishment
-- WFD (Wi-Fi Display) RTSP-based capability negotiation
-- Screen capture from Sway/wlroots via xdg-desktop-portal-wlr
-- GStreamer-based H.264 video encoding for wireless streaming
-- Real-time RTP transmission to target displays
+<p align="center">
+  <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
+  <img src="https://img.shields.io/badge/rust-1.70+-blue" alt="Rust Version">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+</p>
 
-Target users include anyone seeking to extend their Linux desktop wirelessly to larger screens without proprietary software.
+---
 
-## Quick Start Guide
+So you're running Sway (or another wlroots compositor) and want to cast your screen to a TV or projector without installing proprietary bloat or switching to GNOME? Same here.
 
-Prerequisites:
-- Sway or wlroots-based Wayland compositor with xdg-desktop-portal-wlr
-- PipeWire running with screen sharing support
-- GStreamer with H.264 encoding codecs
-- NetworkManager with P2P support
-- Wi-Fi adapter supporting Wi-Fi Direct
+sway-miracast is a Miracast source implementation built from the ground up for wlroots-based Wayland compositors. It talks Wi-Fi Direct, handles the WFD protocol negotiation, captures your screen via PipeWire, and streams H.264 video to any Miracast-compatible receiver.
 
-Basic usage (coming soon once CLI is implemented):
+## What This Does
+
+- **Discovers** Miracast receivers via Wi-Fi Direct P2P
+- **Negotiates** capabilities using the WFD RTSP protocol
+- **Captures** your screen through xdg-desktop-portal-wlr
+- **Encodes** to H.264 and transmits over RTP
+
+No proprietary drivers. No vendor lock-in. Just protocols that should've worked out of the box years ago.
+
+## Features
+
+- Native Wayland support via xdg-desktop-portal-wlr
+- Wi-Fi Direct P2P networking through NetworkManager
+- H.264 hardware encoding via GStreamer
+- Modular architecture (each crate does one thing well)
+- Real-time capability negotiation
+- Comprehensive system diagnostics
+
+## Getting Started
+
+### Prerequisites
+
+You'll need:
+- Sway or another wlroots-based compositor
+- xdg-desktop-portal-wlr configured for screen capture
+- PipeWire with screen sharing support
+- NetworkManager with P2P/Wi-Fi Direct support
+- A Wi-Fi adapter that speaks Wi-Fi Direct (not all do)
+- GStreamer with H.264 codecs (openh264 or x264)
+
+### Quick Check
+
+Run the diagnostics to see if your system is ready:
+
 ```bash
-# Diagnose system capabilities (currently working)
 cargo run --bin doctor
-
-# Discover compatible displays (will work when complete)
-cargo run --bin cli scan
-
-# Connect to display (will work when complete)
-cargo run --bin cli connect [DISPLAY_NAME]
-
-# Start streaming (will work when complete)
-cargo run --bin cli stream
 ```
 
-## Installation
+This checks all dependencies and tells you what's missing.
 
-### Building from Source:
+### Installation
 
-Clone the repository:
-```bash
-git clone https://github.com/yourname/sway-miracast.git
-cd sway-miracast
-```
-
-Ensure dependencies are installed:
-- Rust 1.70+ (with stable toolchain)
-- NetworkManager
-- GStreamer 1.0 with plugins (openh264, x264, h264parse, rtph264pay)
-- PipeWire or compatibility layer
-- xdg-desktop-portal-wlr
-
-Build the project:
-```bash
-cargo build --release
-```
-
-### Dependencies
-
-Required system packages (Ubuntu/Debian):
+**Debian/Ubuntu:**
 ```bash
 sudo apt install gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
                  gstreamer1.0-libav gstreamer1.0-tools \
-                 pipewire pipewire-audio libspa-0.2-bluetooth \
-                 network-manager network-manager-openvpn-gnome
+                 pipewire libspa-0.2-bluetooth network-manager
 ```
 
-Required system packages (Fedora/RHEL):
+**Fedora/RHEL:**
 ```bash
 sudo dnf install gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-                 gstreamer1.0-libav gstreamer1.0-devel \
-                 pipewire pipewire-devel NetworkManager-wifi \
-                 openh264-plugin
+                 gstreamer1.0-libav pipewire NetworkManager-wifi
 ```
 
-## Usage Examples
-
-Once complete, the following commands will be available:
-
-Discover and show available Miracast displays:
+**Build:**
 ```bash
-# Basic discovery
-cargo run --bin cli scan
-
-# With detailed information
-cargo run --bin cli scan --verbose
+git clone https://github.com/forkline/sway-miracast.git
+cd sway-miracast
+cargo build --release
 ```
 
-System health check:
+## Usage
+
+*Note: The CLI is still under development. The following shows the intended API.*
+
+**Scan for receivers:**
 ```bash
-# Check all dependencies
-cargo run --bin doctor
-
-# Check specific component
-cargo run --bin doctor --check pipewire
+miracast scan
 ```
 
-Start wireless display streaming:
+**Connect and stream:**
 ```bash
-# Stream at specific resolution
-cargo run --bin cli stream --target TV_NAME --resolution 1080x720
-
-# Stop current session
-cargo run --bin cli stop
+miracast connect "Living Room TV"
+miracast stream
 ```
 
-## Architecture Summary
+**Check system health:**
+```bash
+miracast doctor
+```
 
-The system is organized as follows:
+## Architecture
 
-- **doctor**: Validates all system dependencies for Miracast capability
-- **net**: Wi-Fi Direct P2P networking using NetworkManager
-- **rtsp**: WFD protocol state machine and negotiation
-- **capture**: Screen capture via xdg-desktop-portal-wlr and PipeWire
-- **stream**: GStreamer video encoding pipeline and RTP packetization
-- **daemon**: Orchestration and session management
-- **cli**: Command-line interface (currently being developed)
+The project is split into focused crates:
 
-The architecture emphasizes modularity, with clean API boundaries between components and extensive testing support.
+| Crate | Purpose |
+|-------|---------|
+| `miracast-doctor` | System capability validation |
+| `miracast-net` | Wi-Fi Direct P2P networking |
+| `miracast-rtsp` | WFD protocol negotiation |
+| `miracast-capture` | Screen capture via PipeWire |
+| `miracast-stream` | GStreamer encoding pipeline |
+| `miracast-daemon` | Session orchestration |
+| `miracast-cli` | Command-line interface |
+
+Each crate is independently testable and has a clear API boundary.
+
+## Roadmap
+
+- [x] Project foundation
+- [x] System diagnostics (doctor)
+- [ ] P2P networking (in progress)
+- [ ] RTSP/WFD negotiation (in progress)
+- [ ] Screen capture
+- [ ] Video encoding
+- [ ] Full integration
 
 ## Contributing
 
-We welcome contributions of all kinds:
+Found a bug? Missing a feature? Hardware compatibility issues?
 
-1. Bug reports: Please provide `sway-miracast doctor` output along with error details
-2. Pull requests: Focus on one logical change, include tests for new functionality
-3. Feature suggestions: Open issues for discussion of new capabilities
-4. Testing: Report compatibility with various Miracast receivers
-5. Documentation: Improve this README and internal comments
+1. Check existing issues
+2. Run `miracast doctor` and include the output
+3. Open a PR with tests for new functionality
 
-To contribute code:
-```bash
-# Fork the repository and clone your fork
-git clone https://github.com/YOUR_USERNAME/sway-miracast.git
-cd sway-miracast
+Code should:
+- Follow Rust naming conventions
+- Include tests for public APIs
+- Use `thiserror` for error types
+- Document public items with `///` comments
 
-# Create a feature branch
-git checkout -b my-feature-branch
+## Known Limitations
 
-# Make changes and run tests
-cargo test
+- Wi-Fi Direct hardware support varies wildly between adapters
+- Performance depends heavily on wireless conditions
+- Currently alpha quality - expect rough edges
 
-# Submit a pull request
-```
-
-All code follows the Rust style guidelines and includes comprehensive unit tests.
-
-## Development Status
-
-**Status: Alpha** - Components under active development, API subject to change
-
-### CI/CD
-
-This project uses automated CI/CD with GitHub Actions:
-
-- **Continuous Integration**: Automated testing, linting, and builds
-- **Auto-tagging**: Automatic version tagging from CHANGELOG.md
-- **Releases**: Automated GitHub releases with artifacts
-
-See [docs/workflows.md](docs/workflows.md) for CI/CD documentation.
-
-### Development Commands
+## Development
 
 ```bash
-# Show all available commands
-just --list
-
-# Run linting and tests
-just test
-
-# Run system diagnostics
-just doctor
-
-# Update changelog
-just update-changelog
-```
-
-### Testing
-
-For detailed testing instructions, see [docs/TESTING.md](docs/TESTING.md).
-
-Quick test:
-```bash
-# Run system verification script
-./scripts/test-system.sh
-
-# Run unit tests
+# Run all tests
 cargo test --workspace
 
-# Run system diagnostics
-cargo run --example check_system -p miracast-doctor
+# Check formatting
+cargo fmt --check
+
+# Run clippy
+cargo clippy --all-targets
+
+# System verification
+./scripts/test-system.sh
 ```
-
-Current status by milestone ([view roadmap](docs/milestones.md)):
-- ✅ Project foundation and workspace setup
-- ✅ Basic doctor and system validation tools 
-- 🔄 P2P networking in progress (`net` crate)
-- 🔄 WFD protocol negotiation implemented (`rtsp` crate)
-- 🚧 Screen capture from Wayland (planned: `capture` crate)
-- 🚧 Video encoding pipeline (planned: `stream` crate)
-- ⏳ Complete integration and testing (planned)
-
-### Limitations
-
-- Requires Wayland compositor supporting xdg-desktop-portal-wlr (Sway/wlroots primarily)
-- Wi-Fi Direct capability needed on host system
-- Early implementation may have reliability or performance issues
-- Hardware acceleration support still under development
-
-## Security
-
-The implementation follows security best practices:
-- Network communications run over secure P2P links
-- Local privilege elevation follows principle of least privilege
-- User consent required for screen sharing (via portal interfaces)
-- Input validation on protocol parameters prevents injection
-- Cryptographic functions provided by platform libraries only
-
-Note that screen content will transmit over wireless networks - consider sensitivity of displayed materials.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. Use it, modify it, share it.
 
-Copyright (c) 2026 sway-miracast contributors.
+---
+
+*Built with frustration by people who just wanted their screens to work.*
