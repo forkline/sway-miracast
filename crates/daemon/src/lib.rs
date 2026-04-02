@@ -8,7 +8,9 @@ use tracing::{debug, error, info};
 use swaybeam_capture::Capture;
 use swaybeam_doctor::{check_all, Report as DoctorReport};
 use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
-use swaybeam_rtsp::{NegotiatedCodec, RtspClient, RtspServer, SetupResult};
+use swaybeam_rtsp::{
+    parse_wfd_client_rtp_port, NegotiatedCodec, RtspClient, RtspServer, SetupResult,
+};
 use swaybeam_stream::{
     AudioCodec, StreamConfig, StreamPipeline, TestPatternConfig, TestPatternGenerator, VideoCodec,
 };
@@ -449,6 +451,29 @@ impl Daemon {
                 .await?;
 
         let sink_caps = self.exchange_rtsp_capabilities(&mut rtsp_client).await?;
+        if let Some(destination_rtp_port) = sink_caps
+            .get("wfd_client_rtp_ports")
+            .and_then(|value| parse_wfd_client_rtp_port(value))
+        {
+            let session_id = rtsp_client.adopt_peer_session().to_string();
+            info!(
+                "Using sink-advertised RTP destination {}:{} for reverse RTSP mode with session {}",
+                go_ip, destination_rtp_port, session_id
+            );
+            rtsp_client.send_play().await?;
+            info!("Sent implicit PLAY over reverse RTSP control connection");
+
+            *self.state.write() = DaemonState::Streaming;
+            self.start_negotiated_stream(
+                self.get_negotiated_codec(&sink_caps),
+                go_ip,
+                destination_rtp_port,
+            )
+            .await?;
+            info!("Stream pipeline configured in reverse RTSP mode");
+            return Ok(());
+        }
+
         let play_info = rtsp_client
             .wait_for_peer_play(Duration::from_secs(15))
             .await?;

@@ -228,6 +228,17 @@ impl WfdCapabilities {
     }
 }
 
+/// Parse the RTP destination port from a `wfd_client_rtp_ports` value.
+pub fn parse_wfd_client_rtp_port(value: &str) -> Option<u16> {
+    let mut parts = value.split_whitespace();
+    match (parts.next(), parts.next()) {
+        (Some(transport), Some(port_str)) if transport.starts_with("RTP/") => {
+            port_str.parse::<u16>().ok().filter(|port| *port != 0)
+        }
+        _ => None,
+    }
+}
+
 /// Represents the current state of an RTSP/WFD session
 ///
 /// The state machine drives the negotiation process between Miracast source and sink,
@@ -971,6 +982,10 @@ impl RtspClient {
         format!("{}/streamid=0", self.control_uri())
     }
 
+    fn play_uri(&self) -> String {
+        format!("{}/stream", self.control_uri())
+    }
+
     async fn read_message(stream: &mut TcpStream) -> Result<String, RtspError> {
         let mut header_bytes = Vec::new();
         let mut byte = [0u8; 1];
@@ -1125,6 +1140,14 @@ impl RtspClient {
                 return Ok(play_info);
             }
         }
+    }
+
+    pub fn adopt_peer_session(&mut self) -> &str {
+        if self.session_id.is_none() {
+            self.session_id = Some(self.peer_session.session_id.clone());
+        }
+
+        self.session_id.as_deref().unwrap_or_default()
     }
 
     /// Send OPTIONS request to query available commands
@@ -1336,24 +1359,24 @@ impl RtspClient {
     /// Send PLAY to start streaming
     pub async fn send_play(&mut self) -> Result<(), RtspError> {
         self.cseq += 1;
+        let mut request_parts = vec![
+            format!("PLAY {} RTSP/1.0", self.play_uri()),
+            format!("CSeq: {}", self.cseq),
+            String::from("Range: npt=0.000-"),
+        ];
 
         if let Some(ref session_id) = self.session_id {
-            let request = format!(
-                "PLAY {} RTSP/1.0\r\nCSeq: {}\r\nSession: {}\r\nRange: npt=0-\r\n\r\n",
-                self.stream_uri(),
-                self.cseq,
-                session_id
-            );
-
-            self.send_request(request).await?;
-            let _ = self.read_response().await?;
-
-            Ok(())
-        } else {
-            Err(RtspError::ProtocolViolation(
-                "No active session".to_string(),
-            ))
+            request_parts.insert(2, format!("Session: {}", session_id));
         }
+
+        request_parts.push(String::from(""));
+        request_parts.push(String::from(""));
+
+        let request = request_parts.join("\r\n");
+        self.send_request(request).await?;
+        let _ = self.read_response().await?;
+
+        Ok(())
     }
 
     async fn send_request(&mut self, request: String) -> Result<(), RtspError> {

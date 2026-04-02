@@ -258,6 +258,58 @@ pub async fn run_reverse_lg_tv_server(
     Ok(methods)
 }
 
+pub async fn run_reverse_lg_tv_server_implicit_play(
+    server_ip: &str,
+    server_port: u16,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut stream = TcpStream::connect(format!("{}:{}", server_ip, server_port)).await?;
+    let mut methods = Vec::new();
+
+    loop {
+        let request = read_rtsp_message(&mut stream).await?;
+        let method = request
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing method"))?
+            .to_string();
+        methods.push(method.clone());
+
+        let response = match method.as_str() {
+            "OPTIONS" => {
+                "RTSP/1.0 200 OK\r\nCSeq: 1\r\nPublic: org.wfa.wfd1.0, GET_PARAMETER, SET_PARAMETER, PLAY\r\n\r\n".to_string()
+            }
+            "GET_PARAMETER" => {
+                let body = concat!(
+                    "wfd_video_formats: 01 01 00 0000000000000007\r\n",
+                    "wfd_audio_codecs: AAC 00000001 00\r\n",
+                    "wfd_client_rtp_ports: RTP/AVP/UDP;unicast 5006 0 mode=play\r\n",
+                );
+                format!(
+                    "RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Type: text/parameters\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            }
+            "SET_PARAMETER" => "RTSP/1.0 200 OK\r\nCSeq: 3\r\n\r\n".to_string(),
+            "PLAY" => "RTSP/1.0 200 OK\r\nCSeq: 4\r\nRTP-Info: url=rtsp://192.168.49.1/wfd1.0/streamid=0/trackID=1;seq=123456;rtptime=123456789\r\n\r\n".to_string(),
+            other => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Unexpected RTSP method {other}"),
+                )));
+            }
+        };
+
+        stream.write_all(response.as_bytes()).await?;
+
+        if method == "PLAY" {
+            break;
+        }
+    }
+
+    Ok(methods)
+}
+
 async fn read_rtsp_message(
     stream: &mut TcpStream,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
