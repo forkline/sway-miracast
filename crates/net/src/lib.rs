@@ -354,13 +354,14 @@ impl P2pManager {
         );
 
         // WFD Device Information Subelement (Wi-Fi Display spec Table 4)
-        // Based on gnome-network-displays working implementation
+        // Format: [Subelement ID] [Length] [Device Info] [RTSP Port] [Throughput] [Coupled Sink]
         let wfd_ies: Vec<u8> = vec![
-            0x00, // Subelement ID: WFD Device Information
-            0x00, 0x06, // Length: 6 bytes
-            0x00, 0x90, // Device Info: Source + Session Available (0x0090 per WFD spec)
-            0x1C, 0x44, // RTSP Port: 7236 (big-endian)
-            0x00, 0xC8, // Max Throughput: 200 Mbps (0x00C8)
+            0x00,                   // Subelement ID: WFD Device Information
+            0x00, 0x06,             // Length: 6 bytes
+            0x05,                   // Device Info: Source (00) + Session Available (bit 2) + WFD Enabled (bit 0)
+            0x1C, 0x44,             // RTSP Port: 7236 (big-endian)
+            0x00, 0xC8,             // Max Throughput: 200 Mbps
+            0x00,                   // Coupled Sink Status: none
         ];
         wifi_p2p_props.insert(
             "wfd-ies",
