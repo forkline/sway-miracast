@@ -100,6 +100,8 @@ struct HdcpSessionMaterial {
     km: [u8; 16],
     rn: Option<[u8; 8]>,
     rrx: Option<[u8; 8]>,
+    h_prime_verified: bool,
+    pairing_info_received: bool,
     sent_lc_init: bool,
     sent_ske: bool,
 }
@@ -670,6 +672,8 @@ impl Daemon {
                         km,
                         rn: None,
                         rrx: None,
+                        h_prime_verified: false,
+                        pairing_info_received: false,
                         sent_lc_init: false,
                         sent_ske: false,
                     };
@@ -788,30 +792,71 @@ impl Daemon {
         message: &[u8],
     ) {
         match message.first().copied() {
-            Some(0x06) if message.len() >= 9 && !hdcp_session.sent_lc_init => {
+            Some(0x06) if message.len() >= 9 => {
                 let mut rrx = [0u8; 8];
                 rrx.copy_from_slice(&message[1..9]);
                 hdcp_session.rrx = Some(rrx);
-
-                let mut rn = [0u8; 8];
-                OsRng.fill_bytes(&mut rn);
-                if self.send_hdcp_lc_init(hdcp_stream, &rn).await {
-                    hdcp_session.rn = Some(rn);
-                    hdcp_session.sent_lc_init = true;
-                }
+                info!("Stored HDCP rrx, waiting for H_prime and Pairing_Info before LC_Init");
             }
             Some(0x07) if message.len() >= 33 => {
+                let received_hex: String = message[1..33]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                info!("HDCP H_prime received: {}", received_hex);
+
+                let kd = Self::compute_hdcp_kd(&hdcp_session.rtx, &hdcp_session.km);
+                let kd_hex: String = kd.iter().map(|b| format!("{:02x}", b)).collect();
+                info!("HDCP Kd for H_prime: {}", kd_hex);
+
+                let rtx_hex: String = hdcp_session
+                    .rtx
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                info!("HDCP r_tx for H_prime: {}", rtx_hex);
+
                 let expected_h_prime =
                     Self::compute_hdcp_h_prime(&hdcp_session.rtx, &hdcp_session.km);
+                let expected_hex: String = expected_h_prime
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                info!("HDCP H_prime expected: {}", expected_hex);
+
                 if message[1..33] == expected_h_prime {
                     info!("Verified HDCP AKE_Send_H_prime against derived Kd");
+                    hdcp_session.h_prime_verified = true;
+                    self.maybe_send_lc_init(hdcp_stream, hdcp_session).await;
                 } else {
                     tracing::warn!("HDCP AKE_Send_H_prime did not match derived Kd");
                 }
             }
+            Some(0x08) if message.len() >= 17 => {
+                info!("Received HDCP AKE_Send_Pairing_Info");
+                hdcp_session.pairing_info_received = true;
+                self.maybe_send_lc_init(hdcp_stream, hdcp_session).await;
+            }
             Some(0x0a) if message.len() >= 33 && !hdcp_session.sent_ske => {
+                if hdcp_session.rrx.is_none() {
+                    tracing::warn!("Received HDCP LC_Send_L_prime before rrx was received");
+                    return;
+                }
+
+                if !hdcp_session.sent_lc_init {
+                    info!("Received L_prime before LC_Init; sending LC_Init now");
+                    let mut rn = [0u8; 8];
+                    OsRng.fill_bytes(&mut rn);
+                    if !self.send_hdcp_lc_init(hdcp_stream, &rn).await {
+                        tracing::warn!("Failed to send LC_Init");
+                        return;
+                    }
+                    hdcp_session.rn = Some(rn);
+                    hdcp_session.sent_lc_init = true;
+                }
+
                 let (Some(rn), Some(rrx)) = (hdcp_session.rn, hdcp_session.rrx) else {
-                    tracing::warn!("Received HDCP LC_Send_L_prime before LC_Init state was ready");
+                    tracing::warn!("HDCP state error: rn or rrx missing after LC_Init");
                     return;
                 };
 
@@ -852,6 +897,25 @@ impl Daemon {
                 }
             }
             _ => {}
+        }
+    }
+
+    async fn maybe_send_lc_init(
+        &self,
+        hdcp_stream: &TcpStream,
+        hdcp_session: &mut HdcpSessionMaterial,
+    ) {
+        if hdcp_session.h_prime_verified
+            && hdcp_session.pairing_info_received
+            && !hdcp_session.sent_lc_init
+        {
+            let mut rn = [0u8; 8];
+            OsRng.fill_bytes(&mut rn);
+            if self.send_hdcp_lc_init(hdcp_stream, &rn).await {
+                hdcp_session.rn = Some(rn);
+                hdcp_session.sent_lc_init = true;
+                info!("Sent LC_Init after H_prime and Pairing_Info verified");
+            }
         }
     }
 
@@ -952,10 +1016,24 @@ impl Daemon {
     fn compute_hdcp_kd(rtx: &[u8; 8], km: &[u8; 16]) -> [u8; 32] {
         let mut iv = [0u8; 16];
         iv[..8].copy_from_slice(rtx);
+
+        let iv_hex: String = iv.iter().map(|b| format!("{:02x}", b)).collect();
+        debug!("Kd derivation: IV for first block: {}", iv_hex);
+
+        let km_hex: String = km.iter().map(|b| format!("{:02x}", b)).collect();
+        debug!("Kd derivation: Km: {}", km_hex);
+
         let first = Self::compute_hdcp_ctr_block(km, &iv);
+        let first_hex: String = first.iter().map(|b| format!("{:02x}", b)).collect();
+        debug!("Kd derivation: First block: {}", first_hex);
 
         iv[15] = 0x01;
+        let iv2_hex: String = iv.iter().map(|b| format!("{:02x}", b)).collect();
+        debug!("Kd derivation: IV for second block: {}", iv2_hex);
+
         let second = Self::compute_hdcp_ctr_block(km, &iv);
+        let second_hex: String = second.iter().map(|b| format!("{:02x}", b)).collect();
+        debug!("Kd derivation: Second block: {}", second_hex);
 
         let mut kd = [0u8; 32];
         kd[..16].copy_from_slice(&first);
