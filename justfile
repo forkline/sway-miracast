@@ -161,6 +161,10 @@ release: lint test build release-tarball
 update-changelog:
     git-cliff --config cliff.toml -o CHANGELOG.md
 
+# Update version references and Cargo.lock
+update-version:
+    cargo update --workspace
+
 # Development workflow: lint-fix, test, build
 dev: lint-fix test build
 

@@ -1,69 +1,192 @@
-# swaybeam Release Skill
-
-This skill provides a standardized process for creating releases for the swaybeam project.
+---
+name: release
+description: Guide the release process for swaybeam, including version bumping, changelog updates, and creating release branches.
+---
 
 ## Purpose
 
-The release skill standardizes the swaybeam release process to:
-- Ensure consistent versioning and tagging
-- Validate changes against project guidelines
-- Generate proper changelog entries
-- Perform pre-release checks
-- Verify post-release artifacts
+Provide step-by-step instructions for releasing a new version of swaybeam, ensuring proper versioning, changelog updates, and release commit management.
+
+## When to use
+
+Use this skill when asked to:
+- Create a new release
+- Bump the version
+- Update the changelog for a release
+- Prepare a release commit
+
+## Prerequisites
+
+Before starting a release:
+1. Ensure you are on the `main` branch
+2. Ensure the working tree is clean (no uncommitted changes)
+3. Ensure local main is up to date with origin/main
+4. Ensure HEAD is at origin/main (no unpushed commits)
+
+## Version Decision Guide
+
+Use Semantic Versioning (MAJOR.MINOR.PATCH). Determine the bump type by analyzing commits since the last release:
+
+### Major Version (X.0.0)
+
+Bump MAJOR when:
+- Breaking changes to the CLI interface (removed/renamed commands or flags)
+- Breaking changes to configuration format
+- Breaking changes to public APIs
+- Commit message contains `BREAKING CHANGE:` or `!` (e.g., `feat!: ...`)
+
+### Minor Version (0.X.0)
+
+Bump MINOR when:
+- New features added (`feat:` commits)
+- New CLI commands or flags
+- New configuration options
+- Backward-compatible enhancements
+
+### Patch Version (0.0.X)
+
+Bump PATCH when:
+- Bug fixes (`fix:` commits)
+- Documentation updates (`docs:` commits)
+- Internal refactoring (`refactor:` commits)
+- Performance improvements without API changes
+- Dependency updates
+
+### Decision Process
+
+1. Run: `git log v$(sed -n 's/^version = "\(.*\)"/\1/p' ./Cargo.toml | head -n1)..HEAD --oneline`
+2. Check commit messages for:
+   - `!` or `BREAKING CHANGE:` -> MAJOR
+   - `feat:` -> MINOR
+   - `fix:`, `docs:`, `refactor:`, etc. -> PATCH
+3. If multiple types, use the highest precedence (MAJOR > MINOR > PATCH)
 
 ## Release Process
 
-### 1. Pre-checks
+### Step 1: Verify Clean State and Sync
 
-Before initiating a release, verify:
+Ensure HEAD is at origin/main with no uncommitted or unpushed changes:
 
-- All tests pass: `cargo test`
-- Code is formatted: `cargo fmt`
-- No lint warnings: `cargo clippy --workspace --all-targets`
-- Changelog updates are comprehensive and reflect all changes
+```bash
+git checkout main
+git pull origin main
+git status  # Should show "nothing to commit, working tree clean"
+```
 
-### 2. Version Determination
+Check for unpushed commits:
 
-1. Analyze Git history since last tag using conventional commits:
+```bash
+git rev-list --count origin/main..HEAD  # Should output 0
+```
 
-   - `feat:` commits increment minor version
-   - `fix:` commits increment patch version
-   - Breaking changes (`!` or `BREAKING CHANGE:`) increment major version
+If there are local commits not on origin/main, they must be merged first. The changelog template needs the main commit ID.
 
-2. Use semantic versioning (MAJOR.MINOR.PATCH):
-   - MAJOR for breaking changes
-   - MINOR for backward-compatible features
-   - PATCH for backward-compatible fixes
+### Step 2: Determine Version
 
-### 3. Update Version Files
+1. Get current version:
+   ```bash
+   grep '^version =' Cargo.toml
+   ```
 
-1. Update `Cargo.toml` in workspace root and all relevant packages with new version
-2. Run `cargo update -p swaybeam` to update `Cargo.lock`
-3. Run `just update-changelog` to generate changelog entries
-4. Commit version changes
+2. Review commits since last release:
+   ```bash
+   git log v<CURRENT_VERSION>..HEAD --oneline
+   ```
 
-### 4. Create GitHub Release
+3. Decide on MAJOR, MINOR, or PATCH bump based on the Version Decision Guide above.
 
-1. Push the version commit to main branch
-2. Create Git tag: `git tag -a vx.y.z -m "Release vx.y.z"`
-3. Push tag: `git push origin vx.y.z`
-4. Create GitHub release using tag with changelog content
-5. Verify published crate integrity
+### Step 3: Create Release Branch
 
-### 5. Post-relase
+Create a branch named `release/v{NEW_VERSION}`:
 
-- Update any documentation affected by the release
-- Announce release in relevant channels if applicable
+```bash
+git checkout -b release/v<NEW_VERSION>
+```
 
-## Release Checklist
+Example: `git checkout -b release/v0.2.0`
 
-Each release must satisfy:
+### Step 4: Update Version in Cargo.toml
 
-- [ ] All tests pass including integration tests
-- [ ] No regressions in core functionality
-- [ ] Changelog accurately reflects all changes
-- [ ] Version numbers updated in all relevant files
-- [ ] Documentation is consistent with changes
-- [ ] Cargo.lock updated with `cargo update -p swaybeam`
-- [ ] Release builds successfully with `cargo build --release`
-- [ ] Published artifacts contain expected content
+Edit `Cargo.toml` and update the version field in the `[workspace.package]` section:
+
+```toml
+version = "<NEW_VERSION>"
+```
+
+### Step 5: Update Dependencies
+
+Run the update-version just target to update version references and Cargo.lock:
+
+```bash
+just update-version
+```
+
+This command:
+- Updates version references in workspace Cargo.toml files
+- Runs `cargo update --workspace`
+
+### Step 6: Update Changelog
+
+Generate the changelog using git-cliff:
+
+```bash
+just update-changelog
+```
+
+This runs: `git-cliff --config cliff.toml -o CHANGELOG.md`
+
+The changelog will be automatically updated with commits since the last release, grouped by type.
+
+### Step 7: Commit Changes
+
+Stage and commit all changes:
+
+```bash
+git add .
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ./Cargo.toml | head -n1)
+git commit -m "release: Version $VERSION"
+```
+
+### Step 8: Push Branch and Create PR
+
+Push the release branch:
+
+```bash
+git push -u origin release/v<NEW_VERSION>
+```
+
+Create a pull request to merge into main.
+
+### Step 9: After Merge
+
+After the commit is merged to main:
+1. Create and push a tag: `git tag v<VERSION> && git push origin v<VERSION>`
+2. The CI workflow automatically builds release artifacts and creates a GitHub Release
+3. The AUR publish workflow automatically publishes to AUR
+
+## Quick Reference
+
+| Step | Command |
+|------|---------|
+| Check current version | `grep '^version =' Cargo.toml` |
+| View recent commits | `git log v<CUR>..HEAD --oneline` |
+| Check unpushed commits | `git rev-list --count origin/main..HEAD` |
+| Create branch | `git checkout -b release/v<VER>` |
+| Update version refs | `just update-version` |
+| Update changelog | `just update-changelog` |
+| Commit | `git commit -m "release: Version <VER>"` |
+| Push branch | `git push -u origin release/v<VER>` |
+
+## Checklist
+
+- [ ] On main branch, clean working tree
+- [ ] Pulled latest from origin/main
+- [ ] No unpushed commits (HEAD at origin/main)
+- [ ] Determined version bump type (MAJOR/MINOR/PATCH)
+- [ ] Created release branch `release/v<VERSION>`
+- [ ] Updated version in Cargo.toml
+- [ ] Ran `just update-version`
+- [ ] Ran `just update-changelog`
+- [ ] Committed with message `release: Version <VERSION>`
+- [ ] Pushed branch and created PR
+- [ ] After merge: created tag `v<VERSION>`

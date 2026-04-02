@@ -10,8 +10,7 @@ fi
 # bump version
 vim ./Cargo.toml
 
-# update lock file
-cargo update -p swaybeam
+just update-version
 
 just update-changelog
 
