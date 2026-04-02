@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::RwLock;
+use rand::RngCore;
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -475,7 +476,7 @@ impl Daemon {
                 )
                 .await;
             if let Some(ref hdcp_stream) = self.hdcp_stream {
-                self.probe_hdcp_socket(hdcp_stream).await;
+                self.start_hdcp_session(hdcp_stream).await;
             }
             let session_id = rtsp_client.adopt_peer_session().to_string();
             info!(
@@ -589,26 +590,59 @@ impl Daemon {
         None
     }
 
-    async fn probe_hdcp_socket(&self, hdcp_stream: &TcpStream) {
-        let mut buffer = [0u8; 32];
-        match tokio::time::timeout(Duration::from_millis(500), hdcp_stream.peek(&mut buffer)).await
-        {
-            Ok(Ok(bytes)) if bytes > 0 => {
-                let preview = buffer[..bytes]
-                    .iter()
-                    .map(|byte| format!("{:02x}", byte))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                info!("HDCP socket has {} pending bytes: {}", bytes, preview);
-            }
-            Ok(Ok(_)) => {
-                debug!("HDCP socket connected but no data available yet");
-            }
+    async fn start_hdcp_session(&self, hdcp_stream: &TcpStream) {
+        // HDCP 2.x AKE_Init over the interface-independent adaptation is a single
+        // packet containing msg_id=2 followed by an 8-byte transmitter nonce.
+        let mut ake_init = [0u8; 9];
+        ake_init[0] = 0x02;
+        rand::thread_rng().fill_bytes(&mut ake_init[1..]);
+
+        if let Err(err) = hdcp_stream.writable().await {
+            tracing::warn!("HDCP socket not writable before AKE_Init: {}", err);
+            return;
+        }
+
+        if let Err(err) = hdcp_stream.try_write(&ake_init) {
+            tracing::warn!("Failed to send HDCP AKE_Init: {}", err);
+            return;
+        }
+
+        info!(
+            "Sent HDCP AKE_Init with r_tx={} to sink",
+            ake_init[1..]
+                .iter()
+                .map(|byte| format!("{:02x}", byte))
+                .collect::<Vec<_>>()
+                .join("")
+        );
+
+        let mut buffer = [0u8; 600];
+        match tokio::time::timeout(Duration::from_millis(800), hdcp_stream.readable()).await {
+            Ok(Ok(())) => match hdcp_stream.try_read(&mut buffer) {
+                Ok(bytes) if bytes > 0 => {
+                    let preview = buffer[..bytes.min(64)]
+                        .iter()
+                        .map(|byte| format!("{:02x}", byte))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let msg_id = buffer[0];
+                    info!(
+                        "Received HDCP response: {} bytes, msg_id={}, first bytes={}",
+                        bytes, msg_id, preview
+                    );
+                }
+                Ok(_) => {
+                    debug!("HDCP socket readable but no data returned");
+                }
+                Err(err) => {
+                    tracing::warn!("Failed to read HDCP response: {}", err);
+                }
+            },
             Ok(Err(err)) => {
-                tracing::warn!("Failed to peek HDCP socket: {}", err);
+                tracing::warn!("HDCP socket not readable after AKE_Init: {}", err);
             }
             Err(_) => {
-                debug!("HDCP socket probe timed out without data");
+                debug!("HDCP AKE_Init sent but no response arrived before timeout");
             }
         }
     }

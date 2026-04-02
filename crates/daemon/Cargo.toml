@@ -14,6 +14,7 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time", "signal"] }
 parking_lot.workspace = true
 gstreamer.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 pipewire.workspace = true
