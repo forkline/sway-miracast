@@ -351,7 +351,12 @@ impl P2pManager {
             zvariant::Value::Str(zvariant::Str::from(&sink.address)),
         );
 
-        let wfd_ies: Vec<u8> = vec![0x00, 0x00, 0x06, 0x01, 0x13, 0x1c, 0x44, 0x00, 0x32];
+        // WFD IEs for Miracast Source
+        // Device Type: Source (0x01), Session Available, WFD Enabled
+        let wfd_ies: Vec<u8> = vec![
+            0x00, 0x00, 0x06, 0x01, // WFA OUI
+            0x00, 0x01, 0x06, 0x00, // WFD Device Info: Source, Session Available
+        ];
         wifi_p2p_props.insert(
             "wfd-ies",
             zvariant::Value::Array(zvariant::Array::from(&wfd_ies)),
