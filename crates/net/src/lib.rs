@@ -351,11 +351,18 @@ impl P2pManager {
             zvariant::Value::Str(zvariant::Str::from(&sink.address)),
         );
 
-        // WFD IEs for Miracast Source
-        // Device Type: Source (0x01), Session Available, WFD Enabled
+        // WFD Device Information Subelement (Wi-Fi Display spec)
+        // Byte 0: Subelement ID = 0x00 (WFD Device Information)
+        // Bytes 1-2: Length = 6 bytes
+        // Byte 3: Device Type (bits 1:0): 0x00 = WFD Source
+        // Bytes 4-5: Session Management Control Port = 7236 (0x1C44)
+        // Bytes 6-7: WFD Device Maximum Throughput
         let wfd_ies: Vec<u8> = vec![
-            0x00, 0x00, 0x06, 0x01, // WFA OUI
-            0x00, 0x01, 0x06, 0x00, // WFD Device Info: Source, Session Available
+            0x00,                   // Subelement ID: WFD Device Information
+            0x00, 0x06,             // Length: 6 bytes
+            0x00,                   // Device Type: WFD Source (0x00)
+            0x1C, 0x44,             // RTSP Port: 7236
+            0x44, 0x00,             // Max Throughput: 17408 Mbps
         ];
         wifi_p2p_props.insert(
             "wfd-ies",
