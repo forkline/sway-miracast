@@ -56,8 +56,8 @@ impl From<io::Error> for CliError {
     }
 }
 
-impl From<miracast_net::NetError> for CliError {
-    fn from(err: miracast_net::NetError) -> Self {
+impl From<swaybeam_net::NetError> for CliError {
+    fn from(err: swaybeam_net::NetError) -> Self {
         CliError::NetworkError(err.to_string())
     }
 }
@@ -175,7 +175,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
     }
 }
 
-pub fn print_discovery_results(sinks: &[miracast_net::Sink]) {
+pub fn print_discovery_results(sinks: &[swaybeam_net::Sink]) {
     if sinks.is_empty() {
         println!("No Miracast sinks discovered.");
         return;
@@ -196,8 +196,8 @@ pub fn print_discovery_results(sinks: &[miracast_net::Sink]) {
 
 // Simplified session representation for use in the CLI
 #[derive(Debug)]
-pub struct MiracastSession {
-    pub sink: Option<miracast_net::Sink>,
+pub struct SwaybeamSession {
+    pub sink: Option<swaybeam_net::Sink>,
     pub status: SessionStatus,
     pub connection_time: String,
 }
@@ -211,7 +211,7 @@ pub enum SessionStatus {
     Error,
 }
 
-impl fmt::Display for MiracastSession {
+impl fmt::Display for SwaybeamSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Miracast Session Status: {:?}", self.status)?;
 
@@ -241,7 +241,7 @@ impl fmt::Display for SessionStatus {
     }
 }
 
-pub fn print_status(session: &MiracastSession) {
+pub fn print_status(session: &SwaybeamSession) {
     println!("{}", session);
 }
 

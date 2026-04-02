@@ -11,7 +11,7 @@ fi
 vim ./Cargo.toml
 
 # update lock file
-cargo update -p sway-miracast
+cargo update -p swaybeam
 
 just update-changelog
 

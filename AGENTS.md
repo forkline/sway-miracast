@@ -1,22 +1,22 @@
-# Opencode Guidelines for sway-miracast
+# Opencode Guidelines for swaybeam
 
-This file provides instructions for opencode (AI assistant) when assisting with the sway-miracast project.
+This file provides instructions for opencode (AI assistant) when assisting with the swaybeam project.
 
 ## Overview
 
-sway-miracast is a Miracast source implementation for Sway/wlroots-based Wayland compositors. It enables wireless display streaming from Linux systems to Miracast-compatible TVs, monitors, and projectors using Wi-Fi Direct.
+swaybeam is a Miracast source implementation for wlroots-based Wayland compositors. It enables wireless display streaming from Linux systems to Miracast-compatible TVs, monitors, and projectors using Wi-Fi Direct.
 
 ## Project Structure
 
 The project is organized as a Rust workspace with the following crates:
 
-- `miracast-doctor` - System capability checks and validation
-- `miracast-capture` - Screen capture via xdg-desktop-portal-wlr and PipeWire
-- `miracast-stream` - GStreamer video encoding pipeline
-- `miracast-net` - Wi-Fi Direct P2P networking
-- `miracast-rtsp` - WFD RTSP protocol implementation
-- `miracast-daemon` - Session orchestration
-- `miracast-cli` - Command-line interface
+- `swaybeam-doctor` - System capability checks and validation
+- `swaybeam-capture` - Screen capture via xdg-desktop-portal-wlr and PipeWire
+- `swaybeam-stream` - GStreamer video encoding pipeline
+- `swaybeam-net` - Wi-Fi Direct P2P networking
+- `swaybeam-rtsp` - WFD RTSP protocol implementation
+- `swaybeam-daemon` - Session orchestration
+- `swaybeam-cli` - Command-line interface
 
 ## When Assisting with Development
 
@@ -67,7 +67,7 @@ just pre-commit    # Pre-commit hooks
 ### 5. Release Process
 
 1. Update version in `Cargo.toml`
-2. Update `Cargo.lock`: `cargo update -p sway-miracast`
+2. Update `Cargo.lock`: `cargo update -p swaybeam`
 3. Update changelog: `just update-changelog`
 4. Commit: `git commit -m "release: Version X.Y.Z"`
 5. Tag and release are automatic after merge to main
@@ -91,20 +91,20 @@ just lint-fix
 
 ```bash
 # System diagnostics
-cargo run --example check_system -p miracast-doctor
+cargo run --example check_system -p swaybeam-doctor
 
 # P2P discovery
-cargo run --example discover_and_connect -p miracast-net
+cargo run --example discover_and_connect -p swaybeam-net
 
 # RTSP server
-cargo run --example basic_server -p miracast-rtsp
+cargo run --example basic_server -p swaybeam-rtsp
 ```
 
 ### Debugging
 
 Enable debug logging:
 ```bash
-RUST_LOG=debug cargo run --example check_system -p miracast-doctor
+RUST_LOG=debug cargo run --example check_system -p swaybeam-doctor
 ```
 
 ## Common Tasks
@@ -115,7 +115,7 @@ RUST_LOG=debug cargo run --example check_system -p miracast-doctor
 2. Create `Cargo.toml`:
    ```toml
    [package]
-   name = "miracast-new-crate"
+   name = "swaybeam-new-crate"
    version.workspace = true
    edition.workspace = true
 

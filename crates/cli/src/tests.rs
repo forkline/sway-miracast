@@ -6,35 +6,35 @@ mod tests {
     #[test]
     fn test_cli_parsing() {
         // Test that CLI can parse basic commands
-        let cmd = Cli::try_parse_from(&["miracast", "doctor"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "doctor"]);
         assert!(cmd.is_ok());
         match cmd.unwrap().command {
             Command::Doctor => (), // Expected
             _ => panic!("Expected Doctor command"),
         }
 
-        let cmd = Cli::try_parse_from(&["miracast", "discover"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "discover"]);
         assert!(cmd.is_ok());
         match cmd.unwrap().command {
             Command::Discover { timeout } => assert_eq!(timeout, 10), // Default value
             _ => panic!("Expected Discover command with default timeout"),
         }
 
-        let cmd = Cli::try_parse_from(&["miracast", "discover", "-t", "20"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "discover", "-t", "20"]);
         assert!(cmd.is_ok());
         match cmd.unwrap().command {
             Command::Discover { timeout } => assert_eq!(timeout, 20),
             _ => panic!("Expected Discover command with custom timeout"),
         }
 
-        let cmd = Cli::try_parse_from(&["miracast", "connect", "-s", "TestSink"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "connect", "-s", "TestSink"]);
         assert!(cmd.is_ok());
         match cmd.unwrap().command {
             Command::Connect { sink } => assert_eq!(sink, "TestSink"),
             _ => panic!("Expected Connect command"),
         }
 
-        let cmd = Cli::try_parse_from(&["miracast", "stream"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "stream"]);
         assert!(cmd.is_ok());
         match cmd.unwrap().command {
             Command::Stream {
@@ -50,7 +50,7 @@ mod tests {
         }
 
         let cmd = Cli::try_parse_from(&[
-            "miracast",
+            "swaybeam",
             "stream",
             "--width",
             "1280",
@@ -73,21 +73,21 @@ mod tests {
             _ => panic!("Expected Stream command with custom parameters"),
         }
 
-        let cmd = Cli::try_parse_from(&["miracast", "disconnect"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "disconnect"]);
         assert!(cmd.is_ok());
         match cmd.unwrap().command {
             Command::Disconnect => (), // Expected
             _ => panic!("Expected Disconnect command"),
         }
 
-        let cmd = Cli::try_parse_from(&["miracast", "daemon"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "daemon"]);
         assert!(cmd.is_ok());
         match cmd.unwrap().command {
             Command::Daemon => (), // Expected
             _ => panic!("Expected Daemon command"),
         }
 
-        let cmd = Cli::try_parse_from(&["miracast", "status"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "status"]);
         assert!(cmd.is_ok());
         match cmd.unwrap().command {
             Command::Status => (), // Expected
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_json_flag() {
-        let cmd = Cli::try_parse_from(&["miracast", "--json", "doctor"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "--json", "doctor"]);
         assert!(cmd.is_ok());
         let parsed = cmd.unwrap();
         assert!(parsed.json);
@@ -109,13 +109,13 @@ mod tests {
 
     #[test]
     fn test_invalid_command() {
-        let cmd = Cli::try_parse_from(&["miracast", "invalid"]);
+        let cmd = Cli::try_parse_from(&["swaybeam", "invalid"]);
         assert!(cmd.is_err());
     }
 
     #[test]
     fn test_help_command() {
-        let result = std::panic::catch_unwind(|| Cli::try_parse_from(&["miracast", "--help"]));
+        let result = std::panic::catch_unwind(|| Cli::try_parse_from(&["swaybeam", "--help"]));
         // Should not panic because help triggers exit early
         assert!(result.is_err()); // Clap exits early on help
     }

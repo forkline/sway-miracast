@@ -1,5 +1,5 @@
 [package]
-name = "miracast-stream"
+name = "swaybeam-stream"
 version.workspace = true
 edition.workspace = true
 

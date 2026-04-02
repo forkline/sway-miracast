@@ -1,5 +1,5 @@
 //! Integration tests that require real system services
-//! Run with: cargo test -p miracast-daemon --test integration_real -- --ignored
+//! Run with: cargo test -p swaybeam-daemon --test integration_real -- --ignored
 
 #[cfg(test)]
 mod tests {

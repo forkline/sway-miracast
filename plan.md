@@ -1,8 +1,8 @@
-# Implementation Plan: Miracast Source for Sway / wlroots
+# Implementation Plan: Miracast Source for wlroots-based compositors
 
 ## Goal
 
-Build a Linux Miracast **source** implementation that works on **Sway/wlroots**, can stream to an **LG webOS TV**, and is structured so that:
+Build a Linux Miracast **source** implementation that works on **wlroots-based compositors** (Sway, River, Labwc, Hyprland), can stream to **Miracast-compatible TVs**, and is structured so that:
 
 - capture is compositor-friendly
 - Miracast networking/control is isolated
@@ -29,7 +29,7 @@ Do **not** build on MiracleCast source mode as the main foundation.
 
 Instead:
 
-1. Use **Sway/wlroots capture** through **xdg-desktop-portal-wlr + PipeWire**
+1. Use **wlroots compositor capture** through **xdg-desktop-portal-wlr + PipeWire**
 2. Use **GStreamer** for encode + transport plumbing
 3. Use **NetworkManager + wpa_supplicant** for Wi-Fi Direct / P2P orchestration
 4. Implement a new **Rust Miracast RTSP/WFD source stack**
@@ -45,7 +45,7 @@ Instead:
   - environment validation
   - system capability checks
 - `capture`
-  - Sway/wlroots screencast capture
+  - wlroots compositor screencast capture
   - PipeWire integration
 - `stream`
   - video/audio encode
@@ -68,7 +68,7 @@ Instead:
 ## Repository Layout
 
 ```text
-miracast-sway/
+swaybeam/
   Cargo.toml
   crates/
     doctor/

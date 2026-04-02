@@ -1,5 +1,5 @@
 [package]
-name = "miracast-rtsp"
+name = "swaybeam-rtsp"
 version.workspace = true
 edition.workspace = true
 
@@ -14,5 +14,5 @@ parking_lot = { workspace = true }
 rand = { workspace = true }
 
 [[bin]]
-name = "miracast_rtsp_server"
+name = "swaybeam_rtsp_server"
 path = "src/bin/server.rs"

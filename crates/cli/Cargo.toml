@@ -1,19 +1,19 @@
 [package]
-name = "miracast-cli"
+name = "swaybeam-cli"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "miracast"
+name = "swaybeam"
 path = "src/main.rs"
 
 [dependencies]
-miracast-daemon = { path = "../daemon" }
-miracast-net = { path = "../net" }
-miracast-rtsp = { path = "../rtsp" }
-miracast-doctor = { path = "../doctor" }
-miracast-capture = { path = "../capture" }
-miracast-stream = { path = "../stream" }
+swaybeam-daemon = { path = "../daemon" }
+swaybeam-net = { path = "../net" }
+swaybeam-rtsp = { path = "../rtsp" }
+swaybeam-doctor = { path = "../doctor" }
+swaybeam-capture = { path = "../capture" }
+swaybeam-stream = { path = "../stream" }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

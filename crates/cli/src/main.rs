@@ -7,8 +7,8 @@ use tabled::{Table, Tabled};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "sway-miracast")]
-#[command(about = "Miracast source for Sway/wlroots")]
+#[command(name = "swaybeam")]
+#[command(about = "Miracast source for wlroots-based compositors")]
 struct Cli {
     #[arg(long)]
     json: bool,
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
 }
 
 async fn doctor_command(json_output: bool) -> Result<()> {
-    use miracast_doctor::check_all;
+    use swaybeam_doctor::check_all;
 
     if json_output {
         let report = check_all()?;
@@ -97,11 +97,11 @@ async fn doctor_command(json_output: bool) -> Result<()> {
 }
 
 async fn discover_command(timeout: u64, json_output: bool) -> Result<()> {
-    use miracast_net::{P2pConfig, P2pManager};
+    use swaybeam_net::{P2pConfig, P2pManager};
 
     let config = P2pConfig {
         interface_name: "wlan0".to_string(),
-        group_name: "miracast".to_string(),
+        group_name: "swaybeam".to_string(),
     };
 
     let manager = P2pManager::new(config).await?;
@@ -141,11 +141,11 @@ async fn discover_command(timeout: u64, json_output: bool) -> Result<()> {
 }
 
 async fn connect_command(sink_param: &str, json_output: bool) -> Result<()> {
-    use miracast_net::{P2pConfig, P2pManager};
+    use swaybeam_net::{P2pConfig, P2pManager};
 
     let config = P2pConfig {
         interface_name: "wlan0".to_string(),
-        group_name: "miracast".to_string(),
+        group_name: "swaybeam".to_string(),
     };
 
     let manager = P2pManager::new(config).await?;
@@ -196,7 +196,7 @@ async fn connect_command(sink_param: &str, json_output: bool) -> Result<()> {
 }
 
 async fn stream_command(width: u32, height: u32, framerate: u32, json_output: bool) -> Result<()> {
-    use miracast_stream::{StreamConfig, StreamPipeline};
+    use swaybeam_stream::{StreamConfig, StreamPipeline};
 
     let config = StreamConfig {
         video_width: width,
@@ -227,11 +227,11 @@ async fn stream_command(width: u32, height: u32, framerate: u32, json_output: bo
 }
 
 async fn disconnect_command(json_output: bool) -> Result<()> {
-    use miracast_net::{P2pConfig, P2pManager};
+    use swaybeam_net::{P2pConfig, P2pManager};
 
     let config = P2pConfig {
         interface_name: "wlan0".to_string(),
-        group_name: "miracast".to_string(),
+        group_name: "swaybeam".to_string(),
     };
 
     let manager = P2pManager::new(config).await?;
@@ -252,7 +252,7 @@ async fn disconnect_command(json_output: bool) -> Result<()> {
 }
 
 async fn daemon_command(_json_output: bool) -> Result<()> {
-    use miracast_daemon::Daemon;
+    use swaybeam_daemon::Daemon;
 
     println!("Starting Miracast daemon...");
     let mut daemon = Daemon::new();
@@ -290,25 +290,25 @@ mod tests {
 
     #[test]
     fn test_cli_parsing() {
-        let cmd = Cli::try_parse_from(["miracast", "doctor"]);
+        let cmd = Cli::try_parse_from(["swaybeam", "doctor"]);
         assert!(cmd.is_ok());
 
-        let cmd = Cli::try_parse_from(["miracast", "discover"]);
+        let cmd = Cli::try_parse_from(["swaybeam", "discover"]);
         assert!(cmd.is_ok());
 
-        let cmd = Cli::try_parse_from(["miracast", "connect", "-s", "TestSink"]);
+        let cmd = Cli::try_parse_from(["swaybeam", "connect", "-s", "TestSink"]);
         assert!(cmd.is_ok());
 
-        let cmd = Cli::try_parse_from(["miracast", "stream"]);
+        let cmd = Cli::try_parse_from(["swaybeam", "stream"]);
         assert!(cmd.is_ok());
 
-        let cmd = Cli::try_parse_from(["miracast", "disconnect"]);
+        let cmd = Cli::try_parse_from(["swaybeam", "disconnect"]);
         assert!(cmd.is_ok());
 
-        let cmd = Cli::try_parse_from(["miracast", "daemon"]);
+        let cmd = Cli::try_parse_from(["swaybeam", "daemon"]);
         assert!(cmd.is_ok());
 
-        let cmd = Cli::try_parse_from(["miracast", "status"]);
+        let cmd = Cli::try_parse_from(["swaybeam", "status"]);
         assert!(cmd.is_ok());
     }
 }

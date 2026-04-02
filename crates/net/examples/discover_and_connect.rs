@@ -1,12 +1,12 @@
-use miracast_net::{P2pConfig, P2pManager};
 use std::time::Duration;
+use swaybeam_net::{P2pConfig, P2pManager};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure P2P manager
     let config = P2pConfig {
         interface_name: "wlan0".to_string(), // Assuming wlan0 is available
-        group_name: "miracast_group".to_string(),
+        group_name: "swaybeam_group".to_string(),
     };
 
     // Create P2P manager

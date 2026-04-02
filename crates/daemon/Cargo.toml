@@ -1,14 +1,14 @@
 [package]
-name = "miracast-daemon"
+name = "swaybeam-daemon"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-miracast-doctor = { path = "../doctor" }
-miracast-capture = { path = "../capture" }
-miracast-stream = { path = "../stream" }
-miracast-net = { path = "../net" }
-miracast-rtsp = { path = "../rtsp" }
+swaybeam-doctor = { path = "../doctor" }
+swaybeam-capture = { path = "../capture" }
+swaybeam-stream = { path = "../stream" }
+swaybeam-net = { path = "../net" }
+swaybeam-rtsp = { path = "../rtsp" }
 anyhow.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }

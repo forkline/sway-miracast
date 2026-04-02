@@ -5,11 +5,11 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
-use miracast_capture::{Capture, CaptureConfig};
-use miracast_doctor::{check_all, Report as DoctorReport};
-use miracast_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
-use miracast_rtsp::RtspServer;
-use miracast_stream::{AudioCodec, StreamConfig, StreamPipeline, VideoCodec};
+use swaybeam_capture::{Capture, CaptureConfig};
+use swaybeam_doctor::{check_all, Report as DoctorReport};
+use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
+use swaybeam_rtsp::RtspServer;
+use swaybeam_stream::{AudioCodec, StreamConfig, StreamPipeline, VideoCodec};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DaemonState {
@@ -115,7 +115,7 @@ impl Daemon {
 
         let config = P2pConfig {
             interface_name: self.config.interface.clone(),
-            group_name: "miracast".to_string(),
+            group_name: "swaybeam".to_string(),
         };
 
         let manager = P2pManager::new(config).await?;
@@ -132,7 +132,7 @@ impl Daemon {
 
         let config = P2pConfig {
             interface_name: self.config.interface.clone(),
-            group_name: "miracast".to_string(),
+            group_name: "swaybeam".to_string(),
         };
 
         let manager = P2pManager::new(config).await?;
@@ -228,7 +228,7 @@ impl Daemon {
         if let Some(conn) = self.connection.take() {
             let config = P2pConfig {
                 interface_name: self.config.interface.clone(),
-                group_name: "miracast".to_string(),
+                group_name: "swaybeam".to_string(),
             };
 
             let manager = P2pManager::new(config).await?;

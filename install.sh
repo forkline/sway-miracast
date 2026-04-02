@@ -1,9 +1,9 @@
 #!/bin/bash
-# Install sway-miracast
+# Install swaybeam
 
 set -e
 
-echo "=== Installing sway-miracast ==="
+echo "=== Installing swaybeam ==="
 
 # Check for Rust
 if ! command -v cargo &> /dev/null; then
@@ -44,11 +44,11 @@ echo "Building..."
 cargo build --release
 
 # Install binary
-echo "Installing binary to /usr/local/bin/miracast"
-sudo cp target/release/miracast /usr/local/bin/
+echo "Installing binary to /usr/local/bin/swaybeam"
+sudo cp target/release/swaybeam /usr/local/bin/
 
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "Run 'miracast doctor' to check if your system is ready."
+echo "Run 'swaybeam doctor' to check if your system is ready."
 echo ""

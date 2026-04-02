@@ -1,4 +1,4 @@
-use miracast_stream::{StreamConfig, StreamPipeline, VideoCodec};
+use swaybeam_stream::{StreamConfig, StreamPipeline, VideoCodec};
 
 #[test]
 fn test_h264_pipeline_creation() {
@@ -66,9 +66,9 @@ async fn test_h265_pipeline_start_stop() {
     pipeline.start().await.unwrap();
     assert_eq!(
         pipeline.state().await,
-        miracast_stream::PipelineState::Playing
+        swaybeam_stream::PipelineState::Playing
     );
 
     pipeline.stop().await.unwrap();
-    assert_eq!(pipeline.state().await, miracast_stream::PipelineState::Null);
+    assert_eq!(pipeline.state().await, swaybeam_stream::PipelineState::Null);
 }

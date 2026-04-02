@@ -1,5 +1,5 @@
 [package]
-name = "miracast-doctor"
+name = "swaybeam-doctor"
 version.workspace = true
 edition.workspace = true
 

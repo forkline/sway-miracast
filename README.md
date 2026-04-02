@@ -1,29 +1,29 @@
-# sway-miracast
+# Swaybeam
 
-**Miracast source for Sway/wlroots compositors**
+**Miracast source for wlroots-based compositors**
 
-Stream your screen wirelessly to Miracast-compatible TVs and displays.
+Stream your screen wirelessly to Miracast-compatible TVs and displays from Sway, River, Labwc, Hyprland, and other wlroots-based Wayland compositors.
 
 ## Quick Start
 
 ```bash
 # 1. Clone and build
-git clone https://github.com/forkline/sway-miracast.git
-cd sway-miracast
+git clone https://github.com/forkline/swaybeam.git
+cd swaybeam
 cargo build --release
 
 # 2. Check if your system is ready
-./target/release/miracast doctor
+./target/release/swaybeam doctor
 
 # 3. Run the daemon (when all checks pass)
-./target/release/miracast daemon
+./target/release/swaybeam daemon
 ```
 
 ## Requirements
 
 | Component | Why Needed | Install (Arch) |
 |-----------|-----------|----------------|
-| Sway/River/Labwc | Wayland compositor | `sway` |
+| Sway/River/Labwc/Hyprland | wlroots-based Wayland compositor | `sway` / `river` / `labwc` / `hyprland` |
 | WiFi adapter with P2P | Wi-Fi Direct for Miracast | Hardware |
 | PipeWire | Audio/video handling | `pipewire wireplumber` |
 | GStreamer | H.264/H.265 encoding | `gst-plugins-ugly` |
@@ -42,12 +42,12 @@ sudo pacman -S --needed \
     xdg-desktop-portal xdg-desktop-portal-wlr
 
 # Build
-git clone https://github.com/forkline/sway-miracast.git
-cd sway-miracast
+git clone https://github.com/forkline/swaybeam.git
+cd swaybeam
 cargo build --release
 
 # Install (optional)
-sudo cp target/release/miracast /usr/local/bin/
+sudo cp target/release/swaybeam /usr/local/bin/
 ```
 
 ### Ubuntu/Debian
@@ -67,12 +67,12 @@ cargo build --release
 ### Check System Readiness
 
 ```bash
-miracast doctor
+swaybeam doctor
 ```
 
 Expected output when ready:
 ```
-✓ Sway Compositor: Running under Sway
+✓ wlroots Compositor: Running under Sway/River/Labwc/Hyprland
 ✓ PipeWire: PipeWire daemon and session manager running
 ✓ GStreamer: H.264 ready, H.265/4K ready
 ✓ NetworkManager: NetworkManager daemon running
@@ -83,38 +83,38 @@ Expected output when ready:
 ### Discover Miracast Displays
 
 ```bash
-miracast discover --timeout 10
+swaybeam discover --timeout 10
 ```
 
 ### Connect to a Display
 
 ```bash
-miracast connect --sink "Living Room TV"
+swaybeam connect --sink "Living Room TV"
 ```
 
 ### Start Streaming
 
 ```bash
 # 1080p (default)
-miracast stream
+swaybeam stream
 
 # 4K at 30fps
-miracast stream --width 3840 --height 2160 --framerate 30
+swaybeam stream --width 3840 --height 2160 --framerate 30
 
 # 4K at 60fps
-miracast stream --width 3840 --height 2160 --framerate 60
+swaybeam stream --width 3840 --height 2160 --framerate 60
 ```
 
 ### Disconnect
 
 ```bash
-miracast disconnect
+swaybeam disconnect
 ```
 
 ### Run Full Daemon
 
 ```bash
-miracast daemon
+swaybeam daemon
 ```
 
 The daemon handles the full Miracast session automatically:
@@ -128,13 +128,13 @@ The daemon handles the full Miracast session automatically:
 ## CLI Commands
 
 ```
-miracast doctor              # Check system requirements
-miracast discover [-t N]      # Discover Miracast displays
-miracast connect -s <name>   # Connect to a display
-miracast stream [options]    # Start streaming
-miracast disconnect          # Disconnect from display
-miracast daemon              # Run full session
-miracast status              # Show connection status
+swaybeam doctor              # Check system requirements
+swaybeam discover [-t N]      # Discover Miracast displays
+swaybeam connect -s <name>   # Connect to a display
+swaybeam stream [options]    # Start streaming
+swaybeam disconnect          # Disconnect from display
+swaybeam daemon              # Run full session
+swaybeam status              # Show connection status
 ```
 
 ## Video Codecs
@@ -168,8 +168,8 @@ RUST_LOG=debug cargo run -- daemon
 ### "No WiFi hardware detected"
 Install a WiFi adapter that supports P2P (Wi-Fi Direct). Most modern USB adapters work.
 
-### "Not running a Wayland compositor"
-Miracast requires a Wayland compositor like Sway. Run under Sway, River, Labwc, or Hyprland.
+### "Not running a wlroots compositor"
+Swaybeam requires a wlroots-based Wayland compositor. Run under Sway, River, Labwc, Hyprland, or other wlroots compositors.
 
 ### "Missing H.264 plugins"
 Install GStreamer plugins:
@@ -192,7 +192,7 @@ systemctl --user start xdg-desktop-portal-wlr.service
 
 ```
 ┌─────────────────────────────────────────────┐
-│                  CLI (miracast)              │
+│                  CLI (swaybeam)              │
 └──────────────────────┬──────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────┐

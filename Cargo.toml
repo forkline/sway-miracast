@@ -14,8 +14,8 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["sway-miracast contributors"]
-repository = "https://github.com/forkline/sway-miracast"
+authors = ["swaybeam contributors"]
+repository = "https://github.com/forkline/swaybeam"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

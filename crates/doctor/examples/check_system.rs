@@ -1,6 +1,6 @@
 //! Example demonstrating system capability checking functionality
 
-use miracast_doctor::check_all;
+use swaybeam_doctor::check_all;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Miracast Doctor - System Check");

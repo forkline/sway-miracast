@@ -1,5 +1,5 @@
 [package]
-name = "miracast-net"
+name = "swaybeam-net"
 version.workspace = true
 edition.workspace = true
 

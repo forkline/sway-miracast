@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project implements a Miracast source for Sway/wlroots compositors.
+This project implements a Miracast source for wlroots-based compositors.
 
 ## Components
 
@@ -10,7 +10,7 @@ This project implements a Miracast source for Sway/wlroots compositors.
 Environment validation and system capability checks.
 
 ### capture
-Sway/wlroots screencast capture via xdg-desktop-portal-wlr and PipeWire.
+wlroots-based compositor screencast capture via xdg-desktop-portal-wlr and PipeWire.
 
 ### stream
 Video/audio encoding and GStreamer pipeline management.
@@ -29,7 +29,7 @@ Command-line interface for operators.
 
 ## Dependencies
 
-- Sway/wlroots compositor
+- wlroots-based compositor (Sway, River, Labwc, Hyprland, etc.)
 - xdg-desktop-portal-wlr
 - PipeWire
 - GStreamer
