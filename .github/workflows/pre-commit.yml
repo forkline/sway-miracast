@@ -1,0 +1,45 @@
+# Pre-commit CI Workflow
+#
+# Setup Requirements:
+# 1. No secrets required
+# 2. Ensure .pre-commit-config.yaml exists in the repository
+#
+# Workflow Triggers:
+# - Push to main branch
+# - Pull requests to main
+#
+# Note: Rust hooks (fmt, clippy) are skipped here as they run in rust.yml
+
+name: Pre-commit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Cache pre-commit hooks
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            pre-commit-
+
+      - name: Run pre-commit (skip Rust hooks)
+        run: SKIP=fmt,clippy pre-commit run --all-files --verbose

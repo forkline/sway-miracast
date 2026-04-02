@@ -1,0 +1,68 @@
+# Auto Tag Workflow
+#
+# Setup Requirements:
+# 1. Create Personal Access Token (PAT) with 'repo' scope
+#    GitHub → Settings → Developer settings → Personal access tokens
+# 2. Generate GPG key for signing tags:
+#    gpg --full-generate-key
+#    gpg --armor --export-secret-keys YOUR_EMAIL > gpg-private-key.asc
+# 3. Add public key to GitHub account (SSH and GPG keys)
+# 4. Add repository secrets:
+#    - PAT: Personal Access Token
+#    - GPG_PRIVATE_KEY: Contents of gpg-private-key.asc
+#
+# Workflow Triggers:
+# - Push to main branch
+# - Reads version from CHANGELOG.md
+# - Creates signed tag if version changed
+#
+# See docs/workflows.md for detailed setup instructions
+
+name: Auto tag
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        with:
+          token: ${{ secrets.PAT }}
+        uses: actions/checkout@v6
+
+      - name: Get last changelog version
+        id: changelog_reader
+        uses: mindsers/changelog-reader-action@v2
+        with:
+          path: ./CHANGELOG.md
+
+      - name: Check if tag exists
+        run: |
+          tag=${{ steps.changelog_reader.outputs.version }}
+          if git ls-remote --tags origin | grep -q "refs/tags/$tag"; then
+            echo "Tag already exists"
+            echo "TAG_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "Tag does not exist"
+            echo "TAG_EXISTS=false" >> $GITHUB_ENV
+          fi
+
+      - name: Import GPG key
+        if: env.TAG_EXISTS == 'false'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Create new tag
+        if: env.TAG_EXISTS == 'false'
+        run: |
+          tag=${{ steps.changelog_reader.outputs.version }}
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag -s "$tag" -m "$tag" --local-user $(gpg --list-keys --with-colons | grep '^pub' | cut -d':' -f5)
+          git push origin "$tag"

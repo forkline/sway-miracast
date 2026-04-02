@@ -4,3 +4,41 @@ Cargo.lock
 *.swo
 *~
 .DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.iml
+*.sublime-*
+
+# Release artifacts
+*.tar.gz
+*.tar.gz.sha256
+
+# Coverage
+/coverage
+*.profraw
+*.profdata
+
+# Documentation
+/doc
+
+# Pre-commit
+.pre-commit-config.yaml.local
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Test outputs
+/test-results
+/test-output
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/

@@ -1,0 +1,41 @@
+# Pre-commit configuration for sway-miracast
+# Install hooks: `pre-commit install`
+# Run manually: `pre-commit run --all-files`
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-executables-have-shebangs
+      - id: check-merge-conflict
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: ['-d', '{extends: default, rules: {document-start: disable, line-length: disable}}']
+
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: fmt
+        name: cargo fmt
+        description: Format Rust code with cargo fmt
+        entry: cargo fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: clippy
+        name: cargo clippy
+        description: Lint Rust code with cargo clippy
+        entry: cargo clippy
+        language: system
+        types: [rust]
+        pass_filenames: false
+        args: ["--all-targets", "--", "-D", "warnings"]

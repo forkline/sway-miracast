@@ -1,0 +1,149 @@
+# Rust CI Workflow
+#
+# Setup Requirements:
+# 1. No secrets required (GITHUB_TOKEN is auto-provided)
+#
+# Workflow Triggers:
+# - Push to main branch
+# - Pull requests to main
+# - Tags matching v[0-9]* (releases)
+
+name: Rust
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - v[0-9]*
+  pull_request:
+    branches: [main]
+
+jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Install stable toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - run: rustup override set ${{steps.toolchain.outputs.name}}
+      - run: rustup component add rustfmt
+
+      - name: Run cargo fmt
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Install stable toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - run: rustup override set ${{steps.toolchain.outputs.name}}
+      - run: rustup component add clippy
+
+      - uses: clechasseur/rs-clippy-check@v5
+        with:
+          args: --all-features -- --deny warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build documentation
+        run: cargo doc --no-deps
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - {target: x86_64-unknown-linux-gnu, os: ubuntu-22.04}
+    name: ${{ matrix.job.target }} (${{ matrix.job.os }})
+    runs-on: ${{ matrix.job.os }}
+    needs: [fmt, clippy, test]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.job.target }}
+          override: true
+
+      - name: Build
+        run: cargo build --verbose --target ${{ matrix.job.target }}
+
+      - name: Extract crate information
+        run: |
+          echo "PROJECT_NAME=miracast" >> $GITHUB_ENV
+          echo "PROJECT_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ./Cargo.toml | head -n1)" >> $GITHUB_ENV
+
+      - name: Make release
+        id: package
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          export CARGO_TARGET=${{ matrix.job.target }}
+          export PKG_BASE_NAME=${PROJECT_NAME}-${PROJECT_VERSION}-${CARGO_TARGET}
+          cargo build --release --target ${CARGO_TARGET}
+          tar -czf ${PKG_BASE_NAME}.tar.gz -C target/${CARGO_TARGET}/release miracast
+          echo "PKG_BASE_NAME=${PKG_BASE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Generate SHA256 hash
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          sha256sum ${{ steps.package.outputs.PKG_BASE_NAME }}.tar.gz > ${{ steps.package.outputs.PKG_BASE_NAME }}.tar.gz.sha256
+          cat ${{ steps.package.outputs.PKG_BASE_NAME }}.tar.gz.sha256
+
+      - name: Get Changelog Entry
+        if: startsWith(github.ref, 'refs/tags/')
+        id: changelog_reader
+        uses: mindsers/changelog-reader-action@v2.2.3
+        with:
+          version: v${{ env.PROJECT_VERSION }}
+          path: ./CHANGELOG.md
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body: ${{ steps.changelog_reader.outputs.changes }}
+          prerelease: ${{ steps.changelog_reader.outputs.status == 'prereleased' }}
+          draft: ${{ steps.changelog_reader.outputs.status == 'unreleased' }}
+          files: |
+            ${{ steps.package.outputs.PKG_BASE_NAME }}.tar.gz
+            ${{ steps.package.outputs.PKG_BASE_NAME }}.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

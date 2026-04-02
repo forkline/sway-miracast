@@ -1,0 +1,41 @@
+# Stale Issues and PRs Workflow
+#
+# Setup Requirements:
+# 1. No secrets required
+# 2. GITHUB_TOKEN is automatically provided
+#
+# Workflow Triggers:
+# - Scheduled: runs daily at 00:00 UTC
+# - Manual: can be triggered via workflow_dispatch
+#
+# Behavior:
+# - Marks issues/PRs as stale after 30 days of inactivity
+# - Closes stale items after 7 days if no further activity
+# - Excludes items with "pinned", "security", or "enhancement" labels
+
+name: Stale
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          days-before-stale: 30
+          days-before-close: 7
+          stale-issue-message: 'This issue has been automatically marked as stale because it has not had recent activity. It will be closed if no further activity occurs.'
+          stale-pr-message: 'This PR has been automatically marked as stale because it has not had recent activity. It will be closed if no further activity occurs.'
+          close-issue-message: 'This issue was closed because it has been stalled for 7 days with no activity.'
+          close-pr-message: 'This PR was closed because it has been stalled for 7 days with no activity.'
+          exempt-issue-labels: 'pinned,security,enhancement'
+          exempt-pr-labels: 'pinned,security,enhancement'
