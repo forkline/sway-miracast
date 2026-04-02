@@ -23,14 +23,13 @@ pub const LG_TV_RTSP_PORT: u16 = 7236;
 pub const STANDARD_RTSP_PORT: u16 = 7236;
 
 /// Expected WFD IEs from source (swaybeam)
-/// Format: Subelement ID | Length | Device Info | RTSP Port | Throughput | Coupled Sink
+/// Format: Subelement ID | Length | Device Info | RTSP Port | Throughput
 pub const EXPECTED_SOURCE_WFD_IES: &[u8] = &[
     0x00, // Subelement ID: WFD Device Information
     0x00, 0x06, // Length: 6 bytes (big-endian)
-    0x05, // Device Info: Source (00) + Session Available (bit 2) + WFD Enabled (bit 0)
+    0x00, 0x90, // Device Info: match GNOME Network Displays source advertisement
     0x1C, 0x44, // RTSP Port: 7236 (big-endian)
     0x00, 0xC8, // Max Throughput: 200 Mbps
-    0x00, // Coupled Sink Status: none
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,6 +182,121 @@ impl MockLgTvClient {
     pub fn get_state(&self) -> MockTvState {
         self.state.clone()
     }
+}
+
+pub async fn run_reverse_lg_tv_server(
+    server_ip: &str,
+    server_port: u16,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut stream = TcpStream::connect(format!("{}:{}", server_ip, server_port)).await?;
+    let mut methods = Vec::new();
+
+    loop {
+        let request = read_rtsp_message(&mut stream).await?;
+        let method = request
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing method"))?
+            .to_string();
+        methods.push(method.clone());
+
+        let response = match method.as_str() {
+            "OPTIONS" => "RTSP/1.0 200 OK\r\nCSeq: 1\r\nPublic: org.wfa.wfd1.0, OPTIONS, SETUP, PLAY, PAUSE, TEARDOWN, SET_PARAMETER, GET_PARAMETER\r\n\r\n".to_string(),
+            "GET_PARAMETER" => {
+                let peer_options = "OPTIONS * RTSP/1.0\r\nCSeq: 0\r\nUser-Agent: LGE\r\nRequire: org.wfa.wfd1.0\r\n\r\n";
+                stream.write_all(peer_options.as_bytes()).await?;
+
+                let peer_options_response = read_rtsp_message(&mut stream).await?;
+                if !peer_options_response.starts_with("RTSP/1.0 200 OK") {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Expected 200 OK to peer OPTIONS, got: {}",
+                            peer_options_response
+                        ),
+                    )));
+                }
+
+                let body = concat!(
+                    "wfd_video_formats: 01 01 00 0000000000000007\r\n",
+                    "wfd_audio_codecs: AAC 00000001 00\r\n",
+                    "wfd_client_rtp_ports: RTP/AVP/UDP;unicast 5006 5007 mode=play\r\n",
+                );
+                format!(
+                    "RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Type: text/parameters\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            }
+            "SET_PARAMETER" => "RTSP/1.0 200 OK\r\nCSeq: 3\r\n\r\n".to_string(),
+            "SETUP" => {
+                let transport = request
+                    .lines()
+                    .find(|line| line.starts_with("Transport:"))
+                    .unwrap_or("Transport: RTP/AVP/UDP;unicast;client_port=5004-5005");
+                format!(
+                    "RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: 12345678;timeout=30\r\n{};server_port=5006-5007\r\n\r\n",
+                    transport
+                )
+            }
+            "PLAY" => "RTSP/1.0 200 OK\r\nCSeq: 5\r\nSession: 12345678\r\nRTP-Info: url=rtsp://192.168.49.1/wfd1.0/streamid=0/trackID=1;seq=123456;rtptime=123456789\r\n\r\n".to_string(),
+            other => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Unexpected RTSP method {other}"),
+                )));
+            }
+        };
+
+        stream.write_all(response.as_bytes()).await?;
+
+        if method == "PLAY" {
+            break;
+        }
+    }
+
+    Ok(methods)
+}
+
+async fn read_rtsp_message(
+    stream: &mut TcpStream,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut header_bytes = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let bytes_read = stream.read(&mut byte).await?;
+        if bytes_read == 0 {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Connection closed before RTSP request completed",
+            )));
+        }
+
+        header_bytes.push(byte[0]);
+        if header_bytes.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let headers = String::from_utf8(header_bytes)?;
+    let mut request = headers.clone();
+
+    let content_length = headers
+        .lines()
+        .find_map(|header| {
+            header
+                .strip_prefix("Content-Length:")
+                .and_then(|value| value.trim().parse::<usize>().ok())
+        })
+        .unwrap_or(0);
+
+    if content_length > 0 {
+        let mut body = vec![0u8; content_length];
+        stream.read_exact(&mut body).await?;
+        request.push_str(&String::from_utf8_lossy(&body));
+    }
+
+    Ok(request)
 }
 
 /// Validate WFD Device Information IE format

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -844,6 +844,14 @@ pub struct RtpInfo {
     pub session_id: Option<String>,
 }
 
+/// RTP destination learned from peer-initiated SETUP/PLAY.
+#[derive(Debug, Clone)]
+pub struct PeerPlayInfo {
+    pub dest_ip: String,
+    pub dest_port: u16,
+    pub session_id: Option<String>,
+}
+
 /// Results from SETUP command containing transport information
 #[derive(Debug, Clone)]
 pub struct SetupResult {
@@ -864,9 +872,32 @@ pub struct RtspClient {
     session_id: Option<String>,
     stream: Option<TcpStream>,
     cseq: u32,
+    peer_session: RtspSession,
+}
+
+struct PeerRequestOutcome {
+    response: String,
+    play_info: Option<PeerPlayInfo>,
 }
 
 impl RtspClient {
+    fn from_stream(server_addr: String, stream: TcpStream) -> Result<Self, RtspError> {
+        stream.set_nodelay(true).map_err(RtspError::Io)?;
+
+        let mut peer_session = RtspSession::new(format!("peer_{}", rand::random::<u64>()));
+        peer_session.capabilities = WfdCapabilities::source_capabilities();
+
+        tracing::debug!("Connected RTSP TCP socket to {}", server_addr);
+
+        Ok(RtspClient {
+            server_addr,
+            session_id: None,
+            stream: Some(stream),
+            cseq: 0,
+            peer_session,
+        })
+    }
+
     /// Connect to a Miracast sink's RTSP server
     pub async fn connect(
         server_ip: &str,
@@ -899,16 +930,37 @@ impl RtspClient {
             TcpStream::connect(remote_addr).await?
         };
 
-        stream.set_nodelay(true).map_err(RtspError::Io)?;
+        Self::from_stream(addr, stream)
+    }
 
-        tracing::debug!("Connected RTSP TCP socket to {}", addr);
+    /// Accept a reverse RTSP connection and drive client requests over it.
+    pub async fn accept_reverse(
+        bind_addr: &str,
+        server_ip: &str,
+        server_port: u16,
+        timeout: Duration,
+    ) -> Result<Self, RtspError> {
+        let listener = TcpListener::bind(bind_addr).await?;
+        tracing::info!("Waiting for reverse RTSP connection on {}", bind_addr);
 
-        Ok(RtspClient {
-            server_addr: addr,
-            session_id: None,
-            stream: Some(stream),
-            cseq: 0,
-        })
+        let (stream, peer_addr) = tokio::time::timeout(timeout, listener.accept())
+            .await
+            .map_err(|_| RtspError::Timeout)??;
+        tracing::info!(
+            "Accepted reverse RTSP connection from {} on {}",
+            peer_addr,
+            bind_addr
+        );
+
+        if peer_addr.ip().to_string() != server_ip {
+            tracing::warn!(
+                "Reverse RTSP peer IP {} did not match expected sink IP {}",
+                peer_addr.ip(),
+                server_ip
+            );
+        }
+
+        Self::from_stream(format!("{}:{}", server_ip, server_port), stream)
     }
 
     fn control_uri(&self) -> String {
@@ -917,6 +969,162 @@ impl RtspClient {
 
     fn stream_uri(&self) -> String {
         format!("{}/streamid=0", self.control_uri())
+    }
+
+    async fn read_message(stream: &mut TcpStream) -> Result<String, RtspError> {
+        let mut header_bytes = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            let bytes_read = stream.read(&mut byte).await?;
+            if bytes_read == 0 {
+                if header_bytes.is_empty() {
+                    return Err(RtspError::ProtocolViolation(
+                        "Connection closed before RTSP response".to_string(),
+                    ));
+                }
+                break;
+            }
+
+            header_bytes.push(byte[0]);
+            if header_bytes.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let headers = String::from_utf8(header_bytes)
+            .map_err(|err| RtspError::Parse(format!("Invalid UTF-8 in RTSP message: {}", err)))?;
+        let mut message = headers.clone();
+        let content_length = Self::parse_content_length_static(&headers);
+
+        if content_length > 0 {
+            let mut body = vec![0u8; content_length];
+            stream.read_exact(&mut body).await.map_err(RtspError::Io)?;
+            message.push_str(&String::from_utf8_lossy(&body));
+        }
+
+        Ok(message)
+    }
+
+    fn peer_destination_ip(&self) -> String {
+        self.server_addr
+            .split(':')
+            .next()
+            .unwrap_or("0.0.0.0")
+            .to_string()
+    }
+
+    fn build_peer_request_response(
+        &mut self,
+        request: &str,
+    ) -> Result<PeerRequestOutcome, RtspError> {
+        match RtspMessage::parse(request)? {
+            RtspMessage::Options { cseq } => {
+                let response = self.peer_session.process_options()?;
+                Ok(PeerRequestOutcome {
+                    response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
+                    play_info: None,
+                })
+            }
+            RtspMessage::GetParameter { cseq, params } => {
+                let param_refs: Vec<&str> = params.iter().map(|param| param.as_str()).collect();
+                let response = self.peer_session.process_get_parameter(&param_refs)?;
+                Ok(PeerRequestOutcome {
+                    response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
+                    play_info: None,
+                })
+            }
+            RtspMessage::SetParameter { cseq, params } => {
+                let response = self.peer_session.process_set_parameter(&params)?;
+                Ok(PeerRequestOutcome {
+                    response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
+                    play_info: None,
+                })
+            }
+            RtspMessage::Setup {
+                cseq,
+                session: _,
+                transport,
+            } => {
+                let response = self.peer_session.process_setup(transport)?;
+                Ok(PeerRequestOutcome {
+                    response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
+                    play_info: None,
+                })
+            }
+            RtspMessage::Play { cseq, session: _ } => {
+                let response = self.peer_session.process_play()?;
+                Ok(PeerRequestOutcome {
+                    response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
+                    play_info: Some(PeerPlayInfo {
+                        dest_ip: self.peer_destination_ip(),
+                        dest_port: self
+                            .peer_session
+                            .rtp_destination
+                            .as_ref()
+                            .map(|destination| destination.port)
+                            .unwrap_or(5004),
+                        session_id: Some(self.peer_session.session_id.clone()),
+                    }),
+                })
+            }
+            RtspMessage::Teardown { cseq, session: _ } => {
+                let response = self.peer_session.process_teardown()?;
+                Ok(PeerRequestOutcome {
+                    response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
+                    play_info: None,
+                })
+            }
+        }
+    }
+
+    pub async fn wait_for_peer_play(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<PeerPlayInfo, RtspError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            let remaining = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .ok_or(RtspError::Timeout)?;
+
+            let message = {
+                let stream = self.stream.as_mut().ok_or_else(|| {
+                    RtspError::ProtocolViolation("No active connection".to_string())
+                })?;
+                tokio::time::timeout(remaining, Self::read_message(stream))
+                    .await
+                    .map_err(|_| RtspError::Timeout)??
+            };
+
+            if message.starts_with("RTSP/1.0") {
+                tracing::debug!(
+                    "Ignoring RTSP response from {} while waiting for peer PLAY:\n{}",
+                    self.server_addr,
+                    message
+                );
+                continue;
+            }
+
+            tracing::debug!(
+                "Handling peer-initiated RTSP request from {} while waiting for PLAY:\n{}",
+                self.server_addr,
+                message
+            );
+            let outcome = self.build_peer_request_response(&message)?;
+            let stream = self
+                .stream
+                .as_mut()
+                .ok_or_else(|| RtspError::ProtocolViolation("No active connection".to_string()))?;
+            stream
+                .write_all(outcome.response.as_bytes())
+                .await
+                .map_err(RtspError::Io)?;
+
+            if let Some(play_info) = outcome.play_info {
+                return Ok(play_info);
+            }
+        }
     }
 
     /// Send OPTIONS request to query available commands
@@ -1051,6 +1259,7 @@ impl RtspClient {
         }
 
         request_parts.push(String::from(""));
+        request_parts.push(String::from(""));
 
         let request = request_parts.join("\r\n");
         self.send_request(request).await?;
@@ -1162,66 +1371,42 @@ impl RtspClient {
     }
 
     async fn read_response(&mut self) -> Result<String, RtspError> {
-        let stream = self
-            .stream
-            .as_mut()
-            .ok_or_else(|| RtspError::ProtocolViolation("No active connection".to_string()))?;
-
-        let mut reader = BufReader::new(stream);
-
-        // Read response until we get an empty line (\r\n\r\n - indicating end of headers)
-        let mut headers_content = String::new();
-        let mut line = String::new();
-        let mut headers_done = false;
-
-        // First: read headers
         loop {
-            line.clear();
-            let bytes_read = reader.read_line(&mut line).await?;
-
-            if bytes_read == 0 {
-                break; // EOF reached
+            let message = {
+                let stream = self.stream.as_mut().ok_or_else(|| {
+                    RtspError::ProtocolViolation("No active connection".to_string())
+                })?;
+                Self::read_message(stream).await?
+            };
+            if message.starts_with("RTSP/1.0") {
+                tracing::debug!(
+                    "Received RTSP response from {}:\n{}",
+                    self.server_addr,
+                    message
+                );
+                return Ok(message);
             }
 
-            headers_content.push_str(&line);
-
-            // Check if the line is just \r\n (end of headers)
-            if line.trim() == "" {
-                headers_done = true;
-                break;
-            }
-        }
-
-        // Compute content length from headers first
-        let content_length = RtspClient::parse_content_length_static(&headers_content);
-        let mut response = headers_content;
-
-        if !headers_done {
             tracing::debug!(
-                "Received partial RTSP response from {}:\n{}",
+                "Received peer-initiated RTSP request from {} while awaiting response:\n{}",
                 self.server_addr,
-                response
+                message
             );
-            return Ok(response);
-        }
-
-        if content_length > 0 {
-            // Read the specified number of bytes for the body
-            let mut body_bytes = vec![0u8; content_length];
-            reader
-                .read_exact(&mut body_bytes)
+            let response = self.build_peer_request_response(&message)?;
+            tracing::debug!(
+                "Sending RTSP response to peer request on {}:\n{}",
+                self.server_addr,
+                response.response
+            );
+            let stream = self
+                .stream
+                .as_mut()
+                .ok_or_else(|| RtspError::ProtocolViolation("No active connection".to_string()))?;
+            stream
+                .write_all(response.response.as_bytes())
                 .await
                 .map_err(RtspError::Io)?;
-            response.push_str(&String::from_utf8_lossy(&body_bytes));
         }
-
-        tracing::debug!(
-            "Received RTSP response from {}:\n{}",
-            self.server_addr,
-            response
-        );
-
-        Ok(response)
     }
 
     fn parse_content_length_static(response: &str) -> usize {
@@ -1242,7 +1427,7 @@ impl RtspClient {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RtspServer {
     /// Network address the server binds to (e.g., "127.0.0.1:7236")
     address: String,
@@ -1479,11 +1664,12 @@ async fn handle_connection(
     loop {
         let n = socket.read(&mut buffer).await?;
         if n == 0 {
+            tracing::info!("RTSP connection from {} closed by peer", client_addr);
             break;
         }
 
         let request = String::from_utf8_lossy(&buffer[..n]);
-        tracing::debug!("Received request: {}", request);
+        tracing::debug!("Received RTSP request from {}:\n{}", client_addr, request);
 
         let response = match RtspMessage::parse(&request) {
             Ok(msg) => match msg {
@@ -1513,6 +1699,7 @@ async fn handle_connection(
             }
         };
 
+        tracing::debug!("Sending RTSP response to {}:\n{}", client_addr, response);
         socket.write_all(response.as_bytes()).await?;
     }
 

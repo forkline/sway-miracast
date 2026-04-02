@@ -193,6 +193,7 @@ pub enum NetError {
 pub struct P2pConnection {
     pub sink: Sink,
     pub interface: String,
+    _dbus_connection: Connection,
 }
 
 #[derive(Debug, Clone)]
@@ -481,11 +482,12 @@ impl P2pManager {
         );
 
         // WFD Device Information Subelement (Wi-Fi Display spec Table 4)
+        // Match GNOME Network Displays for LG/webOS interoperability.
         // Format: [Subelement ID] [Length] [Device Info: 2 bytes] [RTSP Port] [Throughput]
         let wfd_ies: Vec<u8> = vec![
             0x00, // Subelement ID: WFD Device Information
             0x00, 0x06, // Length: 6 bytes
-            0x00, 0x05, // Device Info: source capabilities
+            0x00, 0x90, // Device Info: GNOME-compatible source capabilities
             0x1C, 0x44, // RTSP Port: 7236 (big-endian)
             0x00, 0xC8, // Max Throughput: 200 Mbps
         ];
@@ -604,6 +606,7 @@ impl P2pManager {
         Ok(P2pConnection {
             sink: connected_sink,
             interface: interface_name,
+            _dbus_connection: self.connection.clone(),
         })
     }
 
@@ -1044,7 +1047,7 @@ mod tests {
         assert_eq!(parse_wfd_rtsp_port(&lg_tv_wfd_ies), 7236);
 
         // Test with spec-compliant source advertisement using default port 7236 (0x1C44)
-        let standard_wfd_ies = vec![0x00, 0x00, 0x06, 0x00, 0x05, 0x1C, 0x44, 0x00, 0xC8];
+        let standard_wfd_ies = vec![0x00, 0x00, 0x06, 0x00, 0x90, 0x1C, 0x44, 0x00, 0xC8];
         assert_eq!(parse_wfd_rtsp_port(&standard_wfd_ies), 7236);
 
         // Accept the older malformed single-byte device-info layout while migrating callers.
@@ -1060,7 +1063,7 @@ mod tests {
         assert_eq!(parse_wfd_rtsp_port(&empty_wfd_ies), 7236);
 
         // Additional test with custom port
-        let custom_port = vec![0x00, 0x00, 0x06, 0x00, 0x05, 0x08, 0xae, 0x00, 0xc8];
+        let custom_port = vec![0x00, 0x00, 0x06, 0x00, 0x90, 0x08, 0xae, 0x00, 0xc8];
         assert_eq!(parse_wfd_rtsp_port(&custom_port), 2222);
     }
 
@@ -1137,7 +1140,7 @@ mod tests {
         let wfd_ies_expected = vec![
             0x00, // Subelement ID: WFD Device Information
             0x00, 0x06, // Length: 6 bytes
-            0x00, 0x05, // Device Info: source capabilities
+            0x00, 0x90, // Device Info: GNOME-compatible source capabilities
             0x1C, 0x44, // RTSP Port: 7236 (big-endian = 0x1C44 = 7236 decimal)
             0x00, 0xC8, // Max Throughput: 200 Mbps
         ];
@@ -1146,7 +1149,7 @@ mod tests {
         let wfd_ies_actual = vec![
             0x00, // Subelement ID: WFD Device Information
             0x00, 0x06, // Length: 6 bytes
-            0x00, 0x05, // Device Info: source capabilities
+            0x00, 0x90, // Device Info: GNOME-compatible source capabilities
             0x1C, 0x44, // RTSP Port: 7236 (big-endian)
             0x00, 0xC8, // Max Throughput: 200 Mbps
         ];
@@ -1158,7 +1161,7 @@ mod tests {
         assert_eq!(wfd_ies_actual[1], 0x00); // Length byte 1
         assert_eq!(wfd_ies_actual[2], 0x06); // Length byte 2 (total 6 bytes following)
         assert_eq!(wfd_ies_actual[3], 0x00); // Device info byte 1
-        assert_eq!(wfd_ies_actual[4], 0x05); // Device info byte 2
+        assert_eq!(wfd_ies_actual[4], 0x90); // Device info byte 2
         assert_eq!(wfd_ies_actual[5], 0x1C); // RTSP port high byte
         assert_eq!(wfd_ies_actual[6], 0x44); // RTSP port low byte
     }
