@@ -68,7 +68,13 @@ fn print_hex_dump(data: &[u8]) {
         let hex: String = chunk.iter().map(|b| format!("{:02x} ", b)).collect();
         let ascii: String = chunk
             .iter()
-            .map(|&b| if b >= 32 && b <= 126 { b as char } else { '.' })
+            .map(|&b| {
+                if (32..=126).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         eprintln!("{:04x}: {:48} |{}|", i * 16, hex, ascii);
     }
@@ -93,7 +99,7 @@ fn handle_rtsp(request: &str, session_id: &mut String) -> String {
 
     let first_line = lines[0];
     let parts: Vec<&str> = first_line.split_whitespace().collect();
-    let method = parts.get(0).unwrap_or(&"");
+    let method = parts.first().unwrap_or(&"");
 
     eprintln!("\n>>> METHOD: {}", method);
 

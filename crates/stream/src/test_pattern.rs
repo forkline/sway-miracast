@@ -59,24 +59,21 @@ impl TestPatternGenerator {
                 let moving_line_pos = (frame_num * 3) % width; // Moving line
                 let is_moving_line = (x as isize - moving_line_pos as isize).abs() < 3;
 
-                #[allow(clippy::identity_op)]
                 let idx = (y * width + x) * 4; // BGRA
 
                 // Set BGRA values
                 if is_moving_line {
                     // Bright white line that moves across the screen
-                    #[allow(clippy::identity_op)]
                     {
-                        frame_data[idx + 0] = 255; // B
+                        frame_data[idx] = 255; // B
                         frame_data[idx + 1] = 255; // G
                         frame_data[idx + 2] = 255; // R
                         frame_data[idx + 3] = 255; // A
                     }
                 } else {
                     // Standard color bars
-                    #[allow(clippy::identity_op)]
                     {
-                        frame_data[idx + 0] = color[2]; // B
+                        frame_data[idx] = color[2]; // B
                         frame_data[idx + 1] = color[1]; // G
                         frame_data[idx + 2] = color[0]; // R
                         frame_data[idx + 3] = 255; // A
@@ -169,14 +166,13 @@ mod tests {
         // Check that frames differ slightly (animation), though with the way the
         // color bars cycle this might not be apparent in just 5 frames
         // So just make sure frames have been produced
-        assert!(true);
     }
 
     #[tokio::test]
     async fn test_different_resolutions() {
         use super::{TestPatternConfig, TestPatternGenerator};
 
-        let configs = vec![
+        let configs = [
             TestPatternConfig {
                 width: 1920,
                 height: 1080,

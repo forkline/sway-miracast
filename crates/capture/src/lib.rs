@@ -266,6 +266,7 @@ impl Capture {
         })
     }
 
+    #[cfg(not(feature = "real_portal"))]
     fn start_simulated_capture(&mut self) -> Result<PipeWireStream, CaptureError> {
         info!("Using simulated PipeWire capture");
         let session_id = format!("sim_session_{}", rand::random::<u32>());

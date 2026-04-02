@@ -1,6 +1,8 @@
 //! Mock LG TV (Miracast Sink) for e2e testing
 //! Simulates the actual behavior we observed from the LG C3 OLED TV
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
