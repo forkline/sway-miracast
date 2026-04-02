@@ -4,6 +4,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
+/// Negotiated video codec for the WFD connection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegotiatedCodec {
+    H264,
+    H265,
+    AV1,
+}
+
 /// Wi-Fi Display (WFD) capabilities structure containing device display and streaming properties
 ///
 /// Represents the capabilities that are exchanged between Miracast source and sink during
@@ -152,6 +160,96 @@ impl WfdCapabilities {
     }
 }
 
+impl WfdCapabilities {
+    /// Negotiate the best video codec based on sink capabilities
+    pub fn negotiate_video_codec(&self) -> NegotiatedCodec {
+        // Parse video_formats to determine supported codecs
+        if let Some(formats) = &self.video_formats {
+            // H.265 has better support in modern 4K TVs - check first
+            if self.supports_h265(formats) {
+                return NegotiatedCodec::H265;
+            }
+            // H.264 is universally supported
+            if self.supports_h264(formats) {
+                return NegotiatedCodec::H264;
+            }
+        }
+        // Default to H.264
+        NegotiatedCodec::H264
+    }
+
+    fn supports_h264(&self, formats: &str) -> bool {
+        // H.264 is indicated by specific bits in the format string
+        // Standard Miracast always supports H.264
+        formats.contains("00") || formats.contains("01") || formats.contains("02")
+    }
+
+    fn supports_h265(&self, formats: &str) -> bool {
+        // H.265 support is indicated in extended WFD
+        // Check for H.265 indicator in format string
+        formats.contains("HEVC") || formats.contains("hevc") || self.has_hevc_flag(formats)
+    }
+
+    fn has_hevc_flag(&self, formats: &str) -> bool {
+        // Parse hex format for HEVC indicator
+        // Extended WFD uses specific bit patterns
+        let parts: Vec<&str> = formats.split_whitespace().collect();
+        if parts.len() >= 4 {
+            // Check video formats bitmask (typically the last component)
+            if let Ok(mask) = u64::from_str_radix(parts[3], 16) {
+                // H.265 is bit 4 in the lower bits (0x10)
+                // 000000000000001F would mean bits 0:4 are set (H264 + some H265)
+                return (mask & 0x0000000000000010) != 0; // Check bit 4 for H.265
+            }
+        }
+        false
+    }
+
+    /// Create source capabilities advertising all supported codecs
+    pub fn source_capabilities() -> Self {
+        WfdCapabilities {
+            video_formats: Some(Self::build_video_formats()),
+            audio_codecs: Some(Self::build_audio_codecs()),
+            ..Default::default()
+        }
+    }
+
+    fn build_video_formats() -> String {
+        // Build WFD video formats string advertising H.264, H.265, AV1
+        // Format: "01 02 10 0000000000000000" (example)
+        // Version 01, preferred display mode 02 (native), UIBC 10
+        // Video formats: bitmask of supported codecs
+        format!("01 01 00 {:016X}", Self::supported_codecs_mask())
+    }
+
+    fn supported_codecs_mask() -> u64 {
+        // Bitmask of all supported video codecs
+        // H.264: bits 0-3 (all profiles)
+        // H.265: bits 4-7 (if supported)
+        // AV1: bits 8-11 (if supported, extension)
+        let mut mask: u64 = 0;
+
+        // H.264 baseline, main, high profiles
+        mask |= 0x0001; // H.264 baseline
+        mask |= 0x0002; // H.264 main
+        mask |= 0x0004; // H.264 high
+
+        // H.265 main profile
+        mask |= 0x0010; // H.265 main
+
+        // AV1 (extended WFD, may not be standard)
+        // mask |= 0x0100; // AV1
+
+        mask
+    }
+
+    fn build_audio_codecs() -> String {
+        // AAC is the primary codec, LPCM optional
+        // Format: "AAC 00000001 00 LPCM 00000001 00"
+        "AAC 00000001 00".to_string()
+    }
+}
+
 /// Represents the current state of an RTSP/WFD session
 ///
 /// The state machine drives the negotiation process between Miracast source and sink,
@@ -214,6 +312,8 @@ pub struct RtspSession {
     pub capabilities: WfdCapabilities,
     /// Additional session parameters beyond WFD standard
     pub parameters: HashMap<String, String>,
+    /// Negotiated video codec determined during WFD negotiation
+    pub negotiated_codec: Option<NegotiatedCodec>,
 }
 
 impl RtspSession {
@@ -243,6 +343,7 @@ impl RtspSession {
             state: SessionState::Init,
             capabilities: WfdCapabilities::new(),
             parameters: HashMap::new(),
+            negotiated_codec: None,
         }
     }
 
@@ -314,7 +415,12 @@ impl RtspSession {
         for param in params {
             let value = self.capabilities.get_parameter(param)?;
             if let Some(val) = value {
-                response.push_str(&format!("{}: {}\r\n", param, val));
+                // Special handling for video formats to return negotiated codec info
+                if *param == "wfd_video_formats" {
+                    response.push_str(&self.build_video_formats_response());
+                } else {
+                    response.push_str(&format!("{}: {}\r\n", param, val));
+                }
             }
         }
 
@@ -343,8 +449,34 @@ impl RtspSession {
             self.parameters.insert(param_name.clone(), value.clone());
         }
 
+        // After receiving video formats, negotiate codec
+        if self.capabilities.video_formats.is_some() {
+            self.negotiated_codec = Some(self.capabilities.negotiate_video_codec());
+        }
+
         self.transition_to(SessionState::SetParamReceived);
         Ok("200 OK\r\n".to_string())
+    }
+
+    /// Builds the response for wfd_video_formats parameter based on negotiated codec
+    pub fn build_video_formats_response(&self) -> String {
+        match self.negotiated_codec {
+            Some(NegotiatedCodec::H265) => {
+                "wfd_video_formats: 01 01 00 000000000000001F\r\n".to_string()
+            }
+            Some(NegotiatedCodec::AV1) => {
+                "wfd_video_formats: 01 01 00 0000000000000100\r\n".to_string()
+            }
+            _ => {
+                // H.264 default
+                "wfd_video_formats: 01 01 00 0000000000000007\r\n".to_string()
+            }
+        }
+    }
+
+    /// Returns the negotiated video codec
+    pub fn get_negotiated_codec(&self) -> Option<NegotiatedCodec> {
+        self.negotiated_codec
     }
 
     /// Processes a PLAY command to begin streaming
@@ -992,7 +1124,7 @@ mod tests {
         let shutdown_task = tokio::spawn(async move {
             // Server will wait for cancellation token
             server_handle.cancelled().await;
-            // If we get here, cancellation worked
+            // If we get here, cancellation was triggered
             42 // arbitrary value to show the task completed
         });
 
@@ -1015,5 +1147,26 @@ mod tests {
             42,
             "Should return our expected value"
         );
+    }
+
+    #[test]
+    fn test_codec_negotiation_h264() {
+        let mut caps = WfdCapabilities::new();
+        caps.video_formats = Some("01 01 00 0000000000000007".to_string());
+        assert_eq!(caps.negotiate_video_codec(), NegotiatedCodec::H264);
+    }
+
+    #[test]
+    fn test_codec_negotiation_h265() {
+        let mut caps = WfdCapabilities::new();
+        caps.video_formats = Some("01 01 00 000000000000001F".to_string());
+        assert_eq!(caps.negotiate_video_codec(), NegotiatedCodec::H265);
+    }
+
+    #[test]
+    fn test_source_capabilities() {
+        let caps = WfdCapabilities::source_capabilities();
+        assert!(caps.video_formats.is_some());
+        assert!(caps.audio_codecs.is_some());
     }
 }

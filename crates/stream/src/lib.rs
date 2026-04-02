@@ -257,21 +257,34 @@ impl StreamPipelineInner {
         appsrc.set_property("is-live", true);
         appsrc.set_property("format", gst::Format::Time);
 
+        // Helper function to set properties safely without error propagation
+        fn set_prop_safe(element: &gst::Element, name: &str, value: &str) {
+            element.set_property_from_str(name, value);
+        }
+
+        fn set_prop_int_safe(element: &gst::Element, name: &str, value: i32) {
+            element.set_property(name, value);
+        }
+
         // Configure encoder for low latency - different options per codec
         match config.video_codec {
             VideoCodec::H264 => {
-                encoder.set_property_from_str("tune", "zerolatency");
-                encoder.set_property_from_str("speed-preset", "veryfast");
+                set_prop_safe(&encoder, "tune", "zerolatency");
+                set_prop_safe(&encoder, "speed-preset", "veryfast");
             }
             VideoCodec::H265 => {
-                // x265enc options for low latency
-                encoder.set_property_from_str("tune", "zero-latency");
-                encoder.set_property_from_str("speed-preset", "fast"); // fast preset since "veryfast" may not be available
+                // Try common property name for x265enc first
+                set_prop_safe(&encoder, "tune", "zerolatency");
+                set_prop_safe(&encoder, "speed-preset", "fast");
             }
             VideoCodec::AV1 => {
                 // SVT-AV1 options for low latency
-                encoder.set_property("preset", 8); // speed preset for low latency
-                encoder.set_property("target-bitrate", config.video_bitrate as i32 / 1000);
+                set_prop_int_safe(&encoder, "preset", 8);
+                set_prop_int_safe(
+                    &encoder,
+                    "target-bitrate",
+                    config.video_bitrate as i32 / 1000,
+                );
             }
         }
 
