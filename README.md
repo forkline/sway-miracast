@@ -1,194 +1,220 @@
 # sway-miracast
 
-<p align="center">
-  <strong>Miracast source implementation for Sway and wlroots-based compositors</strong>
-</p>
+**Miracast source for Sway/wlroots compositors**
 
-<p align="center">
-  <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
-  <img src="https://img.shields.io/badge/rust-2021-blue" alt="Rust 2021 edition">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
-</p>
+Stream your screen wirelessly to Miracast-compatible TVs and displays.
 
-`sway-miracast` is an open-source project focused on bringing Miracast support to Sway and other wlroots-based Wayland desktops.
-It is built as a modular Rust workspace covering discovery, negotiation, capture, streaming, and session orchestration.
+## Quick Start
 
-The goal is straightforward: make it possible to cast a wlroots desktop to a Miracast receiver with tools that fit naturally into a Linux setup.
+```bash
+# 1. Clone and build
+git clone https://github.com/forkline/sway-miracast.git
+cd sway-miracast
+cargo build --release
 
-## Current Status
+# 2. Check if your system is ready
+./target/release/miracast doctor
 
-This project is in alpha.
-
-Today, the repository provides the workspace structure, system diagnostics, and early implementations of the network, RTSP, capture, streaming, daemon, and CLI crates. The full end-to-end Miracast session is still under active development.
-
-If you are looking for a finished daily-driver tool, it is not there yet. If you want to follow the work, test hardware, or help push it forward, you are in the right place.
-
-## Scope
-
-The project is intended to cover the full Miracast source side:
-
-- Wi-Fi Direct discovery and connection setup
-- WFD capability negotiation over RTSP
-- Screen capture through `xdg-desktop-portal-wlr` and PipeWire
-- H.264 encoding and RTP transport via GStreamer
-- Session orchestration and a user-facing CLI
-
-## Workspace
-
-| Crate | Role |
-| --- | --- |
-| `miracast-doctor` | Checks whether the host system is capable of running a Miracast session |
-| `miracast-net` | Handles Wi-Fi Direct and P2P networking |
-| `miracast-rtsp` | Implements WFD RTSP negotiation |
-| `miracast-capture` | Integrates screen capture through portal and PipeWire APIs |
-| `miracast-stream` | Builds the GStreamer video pipeline |
-| `miracast-daemon` | Coordinates the full session lifecycle |
-| `miracast-cli` | Exposes user-facing commands |
+# 3. Run the daemon (when all checks pass)
+./target/release/miracast daemon
+```
 
 ## Requirements
 
-To be useful on a real machine, the project expects:
-
-- Sway or another wlroots-based compositor
-- `xdg-desktop-portal-wlr`
-- PipeWire with screen sharing support
-- NetworkManager with Wi-Fi Direct support
-- A Wi-Fi adapter with workable P2P support
-- GStreamer with H.264-related plugins
-
-Hardware support for Miracast on Linux is uneven, especially around Wi-Fi Direct. The `doctor` crate exists partly to make that visible early.
+| Component | Why Needed | Install (Arch) |
+|-----------|-----------|----------------|
+| Sway/River/Labwc | Wayland compositor | `sway` |
+| WiFi adapter with P2P | Wi-Fi Direct for Miracast | Hardware |
+| PipeWire | Audio/video handling | `pipewire wireplumber` |
+| GStreamer | H.264/H.265 encoding | `gst-plugins-ugly` |
+| NetworkManager | P2P connection management | `networkmanager` |
+| xdg-desktop-portal-wlr | Screen capture | `xdg-desktop-portal-wlr` |
 
 ## Installation
 
-Arch Linux is the primary target for this project and the first place new setup instructions should work well.
-
-### Arch Linux
-
-Install the core runtime dependencies first:
+### Arch Linux (Recommended)
 
 ```bash
+# Install dependencies
 sudo pacman -S --needed \
-  gstreamer \
-  gst-plugins-base \
-  gst-plugins-good \
-  gst-plugins-bad \
-  gst-libav \
-  pipewire \
-  wireplumber \
-  networkmanager \
-  wpa_supplicant \
-  xdg-desktop-portal \
-  xdg-desktop-portal-wlr
-```
+    rust gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly \
+    pipewire wireplumber networkmanager wpa_supplicant \
+    xdg-desktop-portal xdg-desktop-portal-wlr
 
-Then build the project:
-
-```bash
+# Build
 git clone https://github.com/forkline/sway-miracast.git
 cd sway-miracast
-cargo build
+cargo build --release
+
+# Install (optional)
+sudo cp target/release/miracast /usr/local/bin/
 ```
 
-### Debian / Ubuntu
-
-Package names differ a bit, but the rough equivalent set is:
+### Ubuntu/Debian
 
 ```bash
 sudo apt install \
-  gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad \
-  gstreamer1.0-libav \
-  gstreamer1.0-tools \
-  pipewire \
-  network-manager \
-  xdg-desktop-portal \
-  xdg-desktop-portal-wlr
+    rustc cargo gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad gstreamer1.0-libav \
+    pipewire wireplumber network-manager wpa_supplicant \
+    xdg-desktop-portal-wlr
+
+cargo build --release
 ```
 
-### Fedora
+## Usage
+
+### Check System Readiness
 
 ```bash
-sudo dnf install \
-  gstreamer1-plugins-base \
-  gstreamer1-plugins-good \
-  gstreamer1-plugins-bad-free \
-  gstreamer1-libav \
-  pipewire \
-  NetworkManager \
-  xdg-desktop-portal \
-  xdg-desktop-portal-wlr
+miracast doctor
 ```
 
-## Getting Started
+Expected output when ready:
+```
+✓ Sway Compositor: Running under Sway
+✓ PipeWire: PipeWire daemon and session manager running
+✓ GStreamer: H.264 ready, H.265/4K ready
+✓ NetworkManager: NetworkManager daemon running
+✓ WPA Supplicant: wpa_supplicant daemon running
+✓ XDG Desktop Portal: xdg-desktop-portal running
+```
 
-Clone and build the workspace:
+### Discover Miracast Displays
 
 ```bash
-git clone https://github.com/forkline/sway-miracast.git
-cd sway-miracast
-cargo build
+miracast discover --timeout 10
 ```
 
-Run the system checks:
+### Connect to a Display
 
 ```bash
-cargo run --bin doctor
+miracast connect --sink "Living Room TV"
 ```
 
-Run the test suite:
+### Start Streaming
 
 ```bash
-cargo test --workspace
+# 1080p (default)
+miracast stream
+
+# 4K at 30fps
+miracast stream --width 3840 --height 2160 --framerate 30
+
+# 4K at 60fps
+miracast stream --width 3840 --height 2160 --framerate 60
 ```
+
+### Disconnect
+
+```bash
+miracast disconnect
+```
+
+### Run Full Daemon
+
+```bash
+miracast daemon
+```
+
+The daemon handles the full Miracast session automatically:
+1. Checks system requirements
+2. Discovers available sinks
+3. Connects via Wi-Fi Direct P2P
+4. Negotiates capabilities via RTSP
+5. Starts screen capture and streaming
+6. Handles disconnection gracefully
+
+## CLI Commands
+
+```
+miracast doctor              # Check system requirements
+miracast discover [-t N]      # Discover Miracast displays
+miracast connect -s <name>   # Connect to a display
+miracast stream [options]    # Start streaming
+miracast disconnect          # Disconnect from display
+miracast daemon              # Run full session
+miracast status              # Show connection status
+```
+
+## Video Codecs
+
+| Codec | Resolution | Bitrate | Use Case |
+|-------|------------|---------|----------|
+| H.264 | 1080p | 8 Mbps | Universal compatibility |
+| H.265 | 4K | 20 Mbps | Better quality for 4K TVs |
+| AV1 | Any | 5 Mbps | Future-proof, best compression |
+
+H.265 is automatically used for 4K streaming. H.264 is used for 1080p for maximum compatibility.
 
 ## Development
 
-Common commands:
-
 ```bash
-just test
-just lint
-just pre-commit
+# Run tests
+cargo test
+
+# Run linter
+cargo clippy
+
+# Format code
+cargo fmt
+
+# Run with debug logging
+RUST_LOG=debug cargo run -- daemon
 ```
 
-If `just` is not installed, the underlying cargo commands also work:
+## Troubleshooting
 
+### "No WiFi hardware detected"
+Install a WiFi adapter that supports P2P (Wi-Fi Direct). Most modern USB adapters work.
+
+### "Not running a Wayland compositor"
+Miracast requires a Wayland compositor like Sway. Run under Sway, River, Labwc, or Hyprland.
+
+### "Missing H.264 plugins"
+Install GStreamer plugins:
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features
-cargo test --workspace
+# Arch
+sudo pacman -S gst-plugins-ugly
+
+# Ubuntu
+sudo apt install gstreamer1.0-plugins-ugly
 ```
 
-## Roadmap
+### Portal not responding
+Ensure portal services are running:
+```bash
+systemctl --user start xdg-desktop-portal.service
+systemctl --user start xdg-desktop-portal-wlr.service
+```
 
-- [x] Workspace and crate layout
-- [x] Initial system diagnostics
-- [ ] Harden Wi-Fi Direct discovery and connection flow
-- [ ] Complete WFD RTSP negotiation
-- [ ] Wire capture and streaming into a real session
-- [ ] Stabilize the CLI and daemon flow
-- [ ] Test against a broader set of receivers
+## Architecture
 
-## Contributing
+```
+┌─────────────────────────────────────────────┐
+│                  CLI (miracast)              │
+└──────────────────────┬──────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────┐
+│                 Daemon                       │
+│  Orchestrates: discover, connect, stream    │
+└──────┬───────┬───────┬───────┬───────┬──────┘
+       │       │       │       │       │
+    Doctor  Capture  Stream   Net   RTSP
+    (check) (screen) (encode) (P2P) (WFD)
+```
 
-Contributions are welcome, especially in these areas:
+## Status
 
-- Wi-Fi Direct compatibility across adapters and chipsets
-- WFD protocol correctness
-- PipeWire and portal integration
-- Receiver interoperability testing
-- Documentation and developer ergonomics
-
-Even small contributions are useful here. A test report from unusual hardware, a cleaner error message, or a note about distro-specific setup can save someone else a lot of time.
-
-If you open an issue for a runtime problem, include:
-
-- your compositor and distro
-- Wi-Fi hardware details
-- output from `cargo run --bin doctor`
-- logs or reproduction steps
+- ✅ System diagnostics (doctor)
+- ✅ Wi-Fi Direct discovery (net)
+- ✅ RTSP/WFD negotiation (rtsp)
+- ✅ Screen capture via portal (capture)
+- ✅ GStreamer H.264/H.265/AV1 encoding (stream)
+- ✅ Session orchestration (daemon)
+- ✅ CLI interface
+- ⏳ Real hardware testing needed
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT
