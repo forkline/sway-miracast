@@ -30,6 +30,7 @@ pub struct DaemonConfig {
     pub video_bitrate: u32,
     pub discovery_timeout: Duration,
     pub interface: String,
+    pub preferred_sink: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -41,6 +42,7 @@ impl Default for DaemonConfig {
             video_bitrate: 8_000_000,
             discovery_timeout: Duration::from_secs(10),
             interface: "wlan0".to_string(),
+            preferred_sink: None,
         }
     }
 }
@@ -266,7 +268,17 @@ impl Daemon {
             return Err(anyhow::anyhow!("No Miracast sinks discovered"));
         }
 
-        let sink = sinks[0].clone();
+        let sink = if let Some(ref preferred) = self.config.preferred_sink {
+            sinks
+                .iter()
+                .find(|s| s.name == *preferred || s.address == *preferred)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Preferred sink '{}' not found", preferred))?
+        } else {
+            info!("No sink specified, using first discovered sink");
+            sinks[0].clone()
+        };
+
         self.connect(sink).await?;
 
         self.negotiate().await?;

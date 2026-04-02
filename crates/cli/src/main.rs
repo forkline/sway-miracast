@@ -37,7 +37,10 @@ enum Command {
         framerate: u32,
     },
     Disconnect,
-    Daemon,
+    Daemon {
+        #[arg(short, long)]
+        sink: Option<String>,
+    },
     Status,
 }
 
@@ -67,7 +70,7 @@ async fn main() -> Result<()> {
             framerate,
         } => stream_command(*width, *height, *framerate, cli.json).await,
         Command::Disconnect => disconnect_command(cli.json).await,
-        Command::Daemon => daemon_command(cli.json).await,
+        Command::Daemon { sink } => daemon_command(sink.clone(), cli.json).await,
         Command::Status => status_command(cli.json).await,
     }
 }
@@ -251,11 +254,15 @@ async fn disconnect_command(json_output: bool) -> Result<()> {
     Ok(())
 }
 
-async fn daemon_command(_json_output: bool) -> Result<()> {
-    use swaybeam_daemon::Daemon;
+async fn daemon_command(sink: Option<String>, _json_output: bool) -> Result<()> {
+    use swaybeam_daemon::{Daemon, DaemonConfig};
 
     println!("Starting Miracast daemon...");
-    let mut daemon = Daemon::new();
+    let config = DaemonConfig {
+        preferred_sink: sink,
+        ..Default::default()
+    };
+    let mut daemon = Daemon::with_config(config);
 
     if let Err(e) = daemon.run().await {
         eprintln!("Daemon error: {}", e);
