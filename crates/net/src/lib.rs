@@ -354,15 +354,15 @@ impl P2pManager {
         // WFD Device Information Subelement (Wi-Fi Display spec)
         // Byte 0: Subelement ID = 0x00 (WFD Device Information)
         // Bytes 1-2: Length = 6 bytes
-        // Byte 3: Device Type (bits 1:0): 0x00 = WFD Source
+        // Byte 3: Device Type (bits 1:0): 0x01 = WFD Source + Session Available bit
         // Bytes 4-5: Session Management Control Port = 7236 (0x1C44)
         // Bytes 6-7: WFD Device Maximum Throughput
         let wfd_ies: Vec<u8> = vec![
-            0x00,                   // Subelement ID: WFD Device Information
-            0x00, 0x06,             // Length: 6 bytes
-            0x00,                   // Device Type: WFD Source (0x00)
-            0x1C, 0x44,             // RTSP Port: 7236
-            0x44, 0x00,             // Max Throughput: 17408 Mbps
+            0x00, // Subelement ID: WFD Device Information
+            0x00, 0x06, // Length: 6 bytes
+            0x01, // Device Type: Source (bits 1:0=00) + Session Available (bit 2=1)
+            0x1C, 0x44, // RTSP Port: 7236 (big-endian)
+            0x00, 0x00, // Max Throughput: 0 (unlimited)
         ];
         wifi_p2p_props.insert(
             "wfd-ies",

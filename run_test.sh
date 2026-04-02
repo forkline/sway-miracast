@@ -19,7 +19,7 @@ ss -tln | grep 7236
 
 # Create P2P
 echo "Creating P2P..."
-nmcli con add type wifi-p2p con-name miracast-test peer "22:28:BC:A8:6C:FE" wifi-p2p.wfd-ies 000006001C444400
+nmcli con add type wifi-p2p con-name miracast-test peer "22:28:BC:A8:6C:FE" wifi-p2p.wfd-ies 000006011C440000
 
 # Activate
 echo "Activating P2P..."

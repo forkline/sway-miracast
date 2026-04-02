@@ -367,15 +367,16 @@ impl RtspSession {
     ///
     /// let mut session = RtspSession::new("test_session".to_string());
     /// let response = session.process_options().unwrap();
-    /// assert!(response.contains("OPTIONS"));
-    /// assert!(response.contains("GET_PARAMETER"));
-    /// assert!(response.contains("SET_PARAMETER"));
+    /// assert!(response.contains("SETUP"));
     /// assert!(response.contains("PLAY"));
     /// assert!(response.contains("TEARDOWN"));
+    /// assert!(response.contains("GET_PARAMETER"));
+    /// assert!(response.contains("SET_PARAMETER"));
+    /// assert!(response.contains("org.wfa.wfd1.0"));
     /// ```
     pub fn process_options(&mut self) -> Result<String, RtspError> {
         self.transition_to(SessionState::OptionsReceived);
-        Ok("Public: OPTIONS, GET_PARAMETER, SET_PARAMETER, PLAY, TEARDOWN\r\n".to_string())
+        Ok("Public: org.wfa.wfd1.0, SETUP, TEARDOWN, PLAY, PAUSE, GET_PARAMETER, SET_PARAMETER\r\n".to_string())
     }
 
     /// Processes a GET_PARAMETER RTSP command for the specified parameter names
@@ -513,7 +514,7 @@ impl RtspSession {
 
                         // Prepare response with server parameters
                         return Ok(format!(
-                            "Transport: RTP/AVP;unicast;source=0.0.0.0;client_port={};server_port=8554-8555\r\nSession: {};timeout=30\r\n", 
+                            "Transport: RTP/AVP/UDP;unicast;client_port={};server_port=5004-5005\r\nSession: {};timeout=30\r\n", 
                             port_range, self.session_id
                         ));
                     }
@@ -522,7 +523,7 @@ impl RtspSession {
         }
 
         // Fallback response
-        Ok(format!("Transport: RTP/AVP;unicast;destination=127.0.0.1;server_port=8554-8555\r\nSession: {};timeout=30\r\n", self.session_id))
+        Ok(format!("Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n", self.session_id))
     }
 
     /// Returns the negotiated video codec
@@ -1122,7 +1123,10 @@ async fn handle_options(
 
     let caps_response = match session.process_options() {
         Ok(response) => response,
-        Err(_) => "Public: OPTIONS, GET_PARAMETER, SET_PARAMETER, PLAY, TEARDOWN\r\n".to_string(),
+        Err(_) => {
+            "Public: org.wfa.wfd1.0, SETUP, TEARDOWN, PLAY, PAUSE, GET_PARAMETER, SET_PARAMETER\r\n"
+                .to_string()
+        }
     };
 
     sessions.write().insert(session_id, session);
@@ -1240,7 +1244,7 @@ async fn handle_setup(
 
             let response = match session.process_setup(transport) {
                 Ok(response) => response,
-                Err(_) => format!("Transport: RTP/AVP;unicast;server_port=8554-8555\r\nSession: {};timeout=30\r\n", session.session_id),
+                Err(_) => format!("Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n", session.session_id),
             };
 
             // Transition to Ready state (waiting for PLAY)

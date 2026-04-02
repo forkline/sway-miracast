@@ -1,10 +1,11 @@
-use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
-const WFD_SOURCE_CAPS: &str = 
+const WFD_SOURCE_CAPS: &str =
     "wfd_video_formats: 00 01 02 04 0001FEFF 3FFFFFFF 00000FFF 00 0000 0000 00 00000000 00 00000000 00\r\n\
      wfd_audio_codecs: AAC 00000001 00\r\n\
-     wfd_client_rtp_ports: RTP/AVP/UDP;unicast 5004 0 mode=play\r\n";
+     wfd_client_rtp_ports: RTP/AVP/UDP;unicast 5004 0 mode=play\r\n\
+     wfd_uibc_capability: none\r\n";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,11 +20,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         tokio::spawn(async move {
             let mut buffer = vec![0u8; 8192];
-            let mut session_id = format!("{:08x}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs());
-            
+            let mut session_id = format!(
+                "{:08x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            );
+
             loop {
                 match socket.read(&mut buffer).await {
                     Ok(0) => {
@@ -34,16 +38,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let data = &buffer[..n];
                         eprintln!("\n--- RECEIVED {} bytes ---", n);
                         print_hex_dump(data);
-                        
+
                         let request = String::from_utf8_lossy(data);
                         eprintln!("\n{}", request);
-                        
+
                         let response = handle_rtsp(&request, &mut session_id);
-                        
+
                         eprintln!("\n--- SENDING RESPONSE ---");
                         print_hex_dump(response.as_bytes());
                         eprintln!("\n{}", response);
-                        
+
                         if let Err(e) = socket.write_all(response.as_bytes()).await {
                             eprintln!("Send error: {}", e);
                             break;
@@ -62,7 +66,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn print_hex_dump(data: &[u8]) {
     for (i, chunk) in data.chunks(16).enumerate() {
         let hex: String = chunk.iter().map(|b| format!("{:02x} ", b)).collect();
-        let ascii: String = chunk.iter()
+        let ascii: String = chunk
+            .iter()
             .map(|&b| if b >= 32 && b <= 126 { b as char } else { '.' })
             .collect();
         eprintln!("{:04x}: {:48} |{}|", i * 16, hex, ascii);
@@ -74,7 +79,7 @@ fn handle_rtsp(request: &str, session_id: &mut String) -> String {
     if lines.is_empty() {
         return "RTSP/1.0 400 Bad Request\r\n\r\n".to_string();
     }
-    
+
     let mut cseq = 1u32;
     for line in &lines {
         if line.to_lowercase().starts_with("cseq:") {
@@ -85,13 +90,13 @@ fn handle_rtsp(request: &str, session_id: &mut String) -> String {
             }
         }
     }
-    
+
     let first_line = lines[0];
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     let method = parts.get(0).unwrap_or(&"");
-    
+
     eprintln!("\n>>> METHOD: {}", method);
-    
+
     match *method {
         "OPTIONS" => {
             format!(
@@ -105,7 +110,7 @@ fn handle_rtsp(request: &str, session_id: &mut String) -> String {
         "GET_PARAMETER" => {
             let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
             let body = &request[body_start..];
-            
+
             if body.contains("wfd_") {
                 format!(
                     "RTSP/1.0 200 OK\r\n\
@@ -131,7 +136,7 @@ fn handle_rtsp(request: &str, session_id: &mut String) -> String {
             let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
             let body = &request[body_start..];
             eprintln!("\n>>> TV PARAMETERS:\n{}", body);
-            
+
             format!(
                 "RTSP/1.0 200 OK\r\n\
                  CSeq: {}\r\n\
@@ -148,9 +153,9 @@ fn handle_rtsp(request: &str, session_id: &mut String) -> String {
                     }
                 }
             }
-            
+
             eprintln!("\n>>> SETUP: client_port={}", client_port);
-            
+
             format!(
                 "RTSP/1.0 200 OK\r\n\
                  CSeq: {}\r\n\
@@ -162,7 +167,7 @@ fn handle_rtsp(request: &str, session_id: &mut String) -> String {
         }
         "PLAY" => {
             eprintln!("\n>>> PLAY - START STREAMING NOW!");
-            
+
             format!(
                 "RTSP/1.0 200 OK\r\n\
                  CSeq: {}\r\n\
