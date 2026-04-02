@@ -112,6 +112,7 @@ pub struct Sink {
     pub name: String,
     pub address: String,
     pub ip_address: Option<String>,
+    pub rtsp_port: u16,
     pub wfd_capabilities: Option<String>,
 }
 
@@ -307,6 +308,7 @@ impl P2pManager {
                     name: name.clone(),
                     address: hw_address.clone(),
                     ip_address: None,
+                    rtsp_port: parse_wfd_rtsp_port(&wfd_ies),
                     wfd_capabilities: Some(parse_wfd_capabilities(&wfd_ies)),
                 });
 
@@ -354,11 +356,11 @@ impl P2pManager {
         // WFD Device Information Subelement (Wi-Fi Display spec Table 4)
         // Based on gnome-network-displays working implementation
         let wfd_ies: Vec<u8> = vec![
-            0x00,                   // Subelement ID: WFD Device Information
-            0x00, 0x06,             // Length: 6 bytes
-            0x00, 0x90,             // Device Info: Source + Session Available (0x0090 per WFD spec)
-            0x1C, 0x44,             // RTSP Port: 7236 (big-endian)
-            0x00, 0xC8,             // Max Throughput: 200 Mbps (0x00C8)
+            0x00, // Subelement ID: WFD Device Information
+            0x00, 0x06, // Length: 6 bytes
+            0x00, 0x90, // Device Info: Source + Session Available (0x0090 per WFD spec)
+            0x1C, 0x44, // RTSP Port: 7236 (big-endian)
+            0x00, 0xC8, // Max Throughput: 200 Mbps (0x00C8)
         ];
         wifi_p2p_props.insert(
             "wfd-ies",
@@ -412,6 +414,7 @@ impl P2pManager {
             name: sink.name.clone(),
             address: sink.address.clone(),
             ip_address: Some(ip_address),
+            rtsp_port: sink.rtsp_port,
             wfd_capabilities: sink.wfd_capabilities.clone(),
         };
 
@@ -534,9 +537,43 @@ fn parse_wfd_capabilities(wfd_ies: &[u8]) -> String {
     }
 }
 
+pub fn parse_wfd_rtsp_port(wfd_ies: &[u8]) -> u16 {
+    // WFD Device Information: byte 1-2 (after device type byte) is RTSP port
+    // Format: 01 XX XX ... where XX XX is the port
+    if wfd_ies.len() >= 3 {
+        ((wfd_ies[1] as u16) << 8) | (wfd_ies[2] as u16)
+    } else {
+        7236 // Default
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_parse_wfd_rtsp_port() {
+        // Test with standard LG TV format: first byte is 01 (device type = sink),
+        // bytes 1-2 (0x13, 0x1c) are the port in big-endian = 4892
+        let lg_tv_wfd_ies = vec![0x01, 0x13, 0x1c]; // LG TV with port 4892
+        assert_eq!(parse_wfd_rtsp_port(&lg_tv_wfd_ies), 4892);
+
+        // Test with another port value - 7236 (our default)
+        let standard_wfd_ies = vec![0x01, 0x1c, 0x44];  
+        assert_eq!(parse_wfd_rtsp_port(&standard_wfd_ies), 7236);
+
+        // Test with insufficient bytes - should return default
+        let short_wfd_ies = vec![0x01, 0x13]; 
+        assert_eq!(parse_wfd_rtsp_port(&short_wfd_ies), 7236);
+
+        // Test with empty bytes - should return default  
+        let empty_wfd_ies: Vec<u8> = vec![];
+        assert_eq!(parse_wfd_rtsp_port(&empty_wfd_ies), 7236);
+
+        // Additional comprehensive test
+        let custom_port = vec![0x01, 0x08, 0xae]; // Custom port: 0x08ae = 2222
+        assert_eq!(parse_wfd_rtsp_port(&custom_port), 2222);
+    }
 
     #[tokio::test]
     async fn test_nm_connection() {

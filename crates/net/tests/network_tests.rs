@@ -52,6 +52,7 @@ mod network_tests {
             name: "Samsung Smart TV".to_string(),
             address: "AA:BB:CC:DD:EE:FF".to_string(),
             ip_address: Some("192.168.1.50".to_string()),
+            rtsp_port: 7236,
             wfd_capabilities: Some("WFD 2.0, H.264, H.265".to_string()),
         };
 
@@ -65,6 +66,7 @@ mod network_tests {
             name: "Display".to_string(),
             address: "11:22:33:44:55:66".to_string(),
             ip_address: None,
+            rtsp_port: 7236,
             wfd_capabilities: None,
         };
 
@@ -108,6 +110,7 @@ mod network_tests {
                 name: "Test".to_string(),
                 address: mac.to_string(),
                 ip_address: None,
+                rtsp_port: 7236,
                 wfd_capabilities: None,
             };
             assert_eq!(sink.address, mac);
@@ -128,6 +131,7 @@ mod network_tests {
                 name: "Test Device".to_string(),
                 address: "AA:BB:CC:DD:EE:FF".to_string(),
                 ip_address: Some(ip.to_string()),
+                rtsp_port: 7236,
                 wfd_capabilities: None,
             };
             assert_eq!(sink.ip_address, Some(ip.to_string()));
@@ -167,18 +171,21 @@ mod network_tests {
                 name: "LG TV".to_string(),
                 address: "AA:BB:CC:11:22:33".to_string(),
                 ip_address: None,
+                rtsp_port: 7236,
                 wfd_capabilities: Some("WFD 2.0".to_string()),
             },
             Sink {
                 name: "Samsung Monitor".to_string(),
                 address: "DD:EE:FF:44:55:66".to_string(),
                 ip_address: None,
+                rtsp_port: 7236,
                 wfd_capabilities: Some("WFD 1.3".to_string()),
             },
             Sink {
                 name: "Fire TV Stick".to_string(),
                 address: "11:22:33:AA:BB:CC".to_string(),
                 ip_address: None,
+                rtsp_port: 7236,
                 wfd_capabilities: Some("WFD 2.0, 4K".to_string()),
             },
         ];
