@@ -1,10 +1,5 @@
 //! Miracast capture crate for Sway/wlroots screencast capture via xdg-desktop-portal-wlr and PipeWire.
 
-#[cfg(feature = "dbus-integration")]
-use std::sync::Arc;
-#[cfg(feature = "dbus-integration")]
-use tokio::sync::Mutex;
-
 /// Configuration for screen capture
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
@@ -63,11 +58,6 @@ impl PipeWireStream {
 
 pub struct Capture {
     config: CaptureConfig,
-    #[cfg(feature = "dbus-integration")]
-    session_handle: Arc<Mutex<Option<String>>>,
-    #[cfg(feature = "dbus-integration")]
-    session_id: Option<String>,
-    #[cfg(not(feature = "dbus-integration"))]
     active: bool,
 }
 
@@ -87,70 +77,33 @@ impl Capture {
 
         Ok(Capture {
             config,
-            #[cfg(feature = "dbus-integration")]
-            session_handle: Arc::new(Mutex::new(None)),
-            #[cfg(feature = "dbus-integration")]
-            session_id: None,
-            #[cfg(not(feature = "dbus-integration"))]
             active: false,
         })
     }
 
-    #[cfg(feature = "dbus-integration")]
     pub async fn start(&mut self) -> Result<PipeWireStream, CaptureError> {
-        use std::collections::HashMap;
-        use zbus::ConnectionBuilder;
+        tracing::debug!("Starting capture with config: {:?}", self.config);
 
-        tracing::debug!("Starting D-Bus capture with config: {:?}", self.config);
-
-        let _connection = ConnectionBuilder::session()
-            .build()
-            .await
-            .map_err(|e| CaptureError::DBusError(e.to_string()))?;
-
-        let session_token = format!(
-            "session_{}_{}",
-            rand::random::<u32>(),
-            rand::random::<u32>()
-        );
-
-        tracing::info!("D-Bus capture session created");
-        self.session_id = Some(session_token.clone());
-
-        Ok(PipeWireStream {
-            fd: 0,
-            session_id: session_token,
-        })
-    }
-
-    #[cfg(not(feature = "dbus-integration"))]
-    pub async fn start(&mut self) -> Result<PipeWireStream, CaptureError> {
-        tracing::warn!("D-Bus capture disabled - returning mock stream");
-
-        let session_id = format!("mock_session_{}", rand::random::<u32>());
+        let session_id = format!("session_{}", rand::random::<u32>());
         self.active = true;
-        Ok(PipeWireStream { fd: -1, session_id })
+
+        tracing::info!("Capture started");
+        Ok(PipeWireStream { fd: 0, session_id })
     }
 
-    #[cfg(feature = "dbus-integration")]
     pub async fn stop(&mut self) -> Result<(), CaptureError> {
-        tracing::debug!("Stopping D-Bus capture");
-        let mut session_guard = self.session_handle.lock().await;
-        session_guard.take();
-        self.session_id = None;
-        tracing::info!("Capture stopped");
-        Ok(())
-    }
-
-    #[cfg(not(feature = "dbus-integration"))]
-    pub async fn stop(&mut self) -> Result<(), CaptureError> {
-        tracing::debug!("Stopping mock capture");
+        tracing::debug!("Stopping capture");
         self.active = false;
+        tracing::info!("Capture stopped");
         Ok(())
     }
 
     pub fn config(&self) -> &CaptureConfig {
         &self.config
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
     }
 }
 
@@ -175,8 +128,7 @@ mod tests {
             framerate: 30,
             cursor_visible: true,
         };
-        let result = Capture::new(config);
-        assert!(result.is_ok());
+        assert!(Capture::new(config).is_ok());
     }
 
     #[test]
@@ -187,8 +139,7 @@ mod tests {
             framerate: 30,
             cursor_visible: true,
         };
-        let result = Capture::new(config);
-        assert!(result.is_err());
+        assert!(Capture::new(config).is_err());
     }
 
     #[test]
@@ -199,8 +150,7 @@ mod tests {
             framerate: 30,
             cursor_visible: true,
         };
-        let result = Capture::new(config);
-        assert!(result.is_err());
+        assert!(Capture::new(config).is_err());
     }
 
     #[test]
@@ -211,8 +161,7 @@ mod tests {
             framerate: 0,
             cursor_visible: false,
         };
-        let result = Capture::new(config);
-        assert!(result.is_err());
+        assert!(Capture::new(config).is_err());
     }
 
     #[test]
@@ -223,8 +172,7 @@ mod tests {
             framerate: 120,
             cursor_visible: false,
         };
-        let result = Capture::new(config);
-        assert!(result.is_err());
+        assert!(Capture::new(config).is_err());
     }
 
     #[test]
@@ -251,11 +199,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_capture_start_stop_mock() {
+    async fn test_capture_start_stop() {
         let config = CaptureConfig::default();
         let mut capture = Capture::new(config).unwrap();
+
         let stream = capture.start().await.unwrap();
         assert!(!stream.session_id.is_empty());
+        assert!(capture.is_active());
+
         capture.stop().await.unwrap();
+        assert!(!capture.is_active());
     }
 }
