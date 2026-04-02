@@ -1,0 +1,65 @@
+# AUR Package Publishing Workflow
+#
+# Setup Requirements:
+# 1. Register at https://aur.archlinux.org
+# 2. Generate SSH key: ssh-keygen -t ed25519 -f ~/.ssh/aur -N ""
+# 3. Add public key to AUR account
+# 4. Add repository secrets:
+#    - AUR_USERNAME: Your AUR username
+#    - AUR_EMAIL: Email for git commits
+#    - AUR_SSH_PRIVATE_KEY: Contents of ~/.ssh/aur (private key)
+#
+# Workflow Triggers:
+# - After successful Rust workflow completion
+# - Only on version tags (v[0-9]*)
+#
+# See docs/workflows.md for detailed setup instructions
+
+name: aur-publish
+
+on:
+  workflow_run:
+    workflows: ["Rust"]
+    types:
+      - completed
+
+jobs:
+  aur-publish:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v') }}
+    strategy:
+      matrix:
+        package:
+          - name: swaybeam
+            pkgbuild: PKGBUILD
+          - name: swaybeam-bin
+            pkgbuild: PKGBUILD-bin
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Extract crate information
+        shell: bash
+        run: |
+          echo "PROJECT_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ./Cargo.toml | head -n1)" >> $GITHUB_ENV
+
+      - name: Clone swaybeam repository to get PKGBUILD templates
+        run: |
+          git clone https://github.com/forkline/swaybeam
+          cp swaybeam/.ci/generate-pkgbuild.rh ./
+
+      - name: Create PKGBUILD
+        shell: bash
+        run: |
+          .ci/generate-pkgbuild.rh ${{ matrix.package.pkgbuild }}
+
+      - name: Publish AUR package
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: ${{ matrix.package.name }}
+          pkgbuild: ./${{ matrix.package.pkgbuild }}
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update ${{ matrix.package.name }} AUR package to version ${{ env.PROJECT_VERSION }}
+          ssh_keyscan_types: rsa,ed25519

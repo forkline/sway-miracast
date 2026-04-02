@@ -10,7 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 """
 body = """
 {% if version %}\
-    ## [{{ version }}](https://github.com/yourname/sway-miracast/tree/{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
+    ## [{{ version }}](https://github.com/forkline/swaybeam/tree/{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
 {% else %}\
     ## [unreleased]
 {% endif %}\
@@ -19,7 +19,7 @@ body = """
     {% for commit in commits
     | filter(attribute="scope")
     | sort(attribute="scope") %}
-        - {{commit.scope}}: {{ commit.message | upper_first }} ([{{commit.id | truncate(length=7, end="")}}](https://github.com/yourname/sway-miracast/commit/{{commit.id}}))
+        - {{commit.scope}}: {{ commit.message | upper_first }} ([{{commit.id | truncate(length=7, end="")}}](https://github.com/forkline/swaybeam/commit/{{commit.id}}))
         {%- if commit.breaking %}
         {% raw %}  {% endraw %}- **BREAKING**: {{commit.breaking_description}}
         {%- endif -%}
@@ -27,7 +27,7 @@ body = """
     {% for commit in commits %}
         {%- if commit.scope %}
         {%- else %}
-            - {{ commit.message | upper_first }} ([{{commit.id | truncate(length=7, end="")}}](https://github.com/yourname/sway-miracast/commit/{{commit.id}}))
+            - {{ commit.message | upper_first }} ([{{commit.id | truncate(length=7, end="")}}](https://github.com/forkline/swaybeam/commit/{{commit.id}}))
             {%- if commit.breaking %}
             {% raw %}  {% endraw %}- **BREAKING**: {{commit.breaking_description}}
             {%- endif -%}

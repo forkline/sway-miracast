@@ -1,11 +1,21 @@
 # Swaybeam Justfile
 # Run `just --list` to see available commands
 
+CARGO_TARGET_DIR := "target"
+CARGO_TARGET := "x86_64-unknown-linux-gnu"
 PROJECT_VERSION := `sed -n 's/^version = "\(.*\)"/\1/p' ./Cargo.toml | head -n1`
+PKG_BASE_NAME := "swaybeam-" + PROJECT_VERSION + "-" + CARGO_TARGET
 
 # Show available commands
 default:
     just --list
+
+# Display project information
+info:
+    @echo "Project Version: {{PROJECT_VERSION}}"
+    @echo "Target: {{CARGO_TARGET}}"
+    @echo "Package Base Name: {{PKG_BASE_NAME}}"
+    @echo "Target Dir: {{CARGO_TARGET_DIR}}"
 
 # Build in release mode
 build:
@@ -18,6 +28,19 @@ build-dev:
 # Run all unit tests
 test: build
     cargo test --workspace
+
+# Run unit tests only (libraries only)
+test-unit:
+    cargo test --lib
+
+# Run end-to-end tests (placeholder)
+test-e2e: build
+    @echo "Running end-to-end tests..."
+    # Placeholder for future e2e tests
+
+# Run tests with verbose output
+test-verbose: build
+    cargo test --workspace -- --nocapture
 
 # Run tests with verbose output
 test-verbose: build
@@ -32,7 +55,7 @@ test-doc: build
     cargo test --workspace --doc
 
 # Run all tests including integration
-test-all: test test-integration
+test-all: test test-integration test-e2e
 
 # Run validation suite (protocol compliance + simulation)
 test-validation:
@@ -127,11 +150,11 @@ docs:
 
 # Build release tarball
 release-tarball: build
-    tar -czf swaybeam-{{PROJECT_VERSION}}-linux-x86_64.tar.gz \
+    tar -czf {{PKG_BASE_NAME}}.tar.gz \
         -C target/release swaybeam
-    @echo "Created release tarball: swaybeam-{{PROJECT_VERSION}}-linux-x86_64.tar.gz"
+    @echo "Created release tarball: {{PKG_BASE_NAME}}.tar.gz"
 
-# Full release preparation (lint, test, build)
+# Full release preparation
 release: lint test build release-tarball
 
 # Update changelog

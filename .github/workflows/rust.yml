@@ -86,39 +86,63 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job:
-          - {target: x86_64-unknown-linux-gnu, os: ubuntu-22.04}
-    name: ${{ matrix.job.target }} (${{ matrix.job.os }})
-    runs-on: ${{ matrix.job.os }}
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-22.04
+    name: ${{ matrix.target }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     needs: [fmt, clippy, test]
     steps:
       - uses: actions/checkout@v6
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install cross-compilation tools (for ARM targets)
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          elif [ "${{ matrix.target }}" = "armv7-unknown-linux-gnueabihf" ]; then
+            sudo apt-get install -y gcc-arm-linux-gnueabihf
+          fi
+
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          target: ${{ matrix.job.target }}
+          target: ${{ matrix.target }}
           override: true
 
+      - name: Set cross environment variables
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          elif [ "${{ matrix.target }}" = "armv7-unknown-linux-gnueabihf" ]; then
+            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
+          fi
+
       - name: Build
-        run: cargo build --verbose --target ${{ matrix.job.target }}
+        run: cargo build --verbose --target ${{ matrix.target }}
 
       - name: Extract crate information
         run: |
-          echo "PROJECT_NAME=miracast" >> $GITHUB_ENV
+          echo "PROJECT_NAME=swaybeam" >> $GITHUB_ENV
           echo "PROJECT_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ./Cargo.toml | head -n1)" >> $GITHUB_ENV
 
       - name: Make release
         id: package
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          export CARGO_TARGET=${{ matrix.job.target }}
+          export CARGO_TARGET=${{ matrix.target }}
           export PKG_BASE_NAME=${PROJECT_NAME}-${PROJECT_VERSION}-${CARGO_TARGET}
           cargo build --release --target ${CARGO_TARGET}
-          tar -czf ${PKG_BASE_NAME}.tar.gz -C target/${CARGO_TARGET}/release miracast
+          tar -czf ${PKG_BASE_NAME}.tar.gz -C target/${CARGO_TARGET}/release swaybeam
           echo "PKG_BASE_NAME=${PKG_BASE_NAME}" >> $GITHUB_OUTPUT
 
       - name: Generate SHA256 hash
