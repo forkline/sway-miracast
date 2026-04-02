@@ -5,12 +5,18 @@ use std::fmt;
 pub enum VideoCodec {
     /// H.264 codec, primary for Miracast
     H264,
+    /// H.265/HEVC codec, better for 4K streaming
+    H265,
+    /// AV1 codec, future-proof with best compression
+    AV1,
 }
 
 impl fmt::Display for VideoCodec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VideoCodec::H264 => write!(f, "H264"),
+            VideoCodec::H265 => write!(f, "H265"),
+            VideoCodec::AV1 => write!(f, "AV1"),
         }
     }
 }
@@ -29,6 +35,40 @@ impl fmt::Display for AudioCodec {
         match self {
             AudioCodec::AAC => write!(f, "AAC"),
             AudioCodec::LPCM => write!(f, "LPCM"),
+        }
+    }
+}
+
+impl VideoCodec {
+    pub fn gstreamer_encoder(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "x264enc",
+            VideoCodec::H265 => "x265enc",
+            VideoCodec::AV1 => "svtav1enc", // or "av1enc"
+        }
+    }
+
+    pub fn rtp_payloader(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "rtph264pay",
+            VideoCodec::H265 => "rtph265pay",
+            VideoCodec::AV1 => "rtpav1pay",
+        }
+    }
+
+    pub fn parser(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "h264parse",
+            VideoCodec::H265 => "h265parse",
+            VideoCodec::AV1 => "av1parse",
+        }
+    }
+
+    pub fn caps_name(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "video/x-h264",
+            VideoCodec::H265 => "video/x-h265",
+            VideoCodec::AV1 => "video/x-av1",
         }
     }
 }
@@ -68,6 +108,34 @@ impl Default for StreamConfig {
             audio_bitrate: 128_000, // 128 kbps
             audio_sample_rate: 48000,
             audio_channels: 2,
+        }
+    }
+}
+
+impl StreamConfig {
+    pub fn hd_1080p() -> Self {
+        Self::default()
+    }
+
+    pub fn uhd_4k() -> Self {
+        Self {
+            video_codec: VideoCodec::H265, // H.265 is better for 4K
+            video_bitrate: 20_000_000,     // 20 Mbps for 4K
+            video_width: 3840,
+            video_height: 2160,
+            video_framerate: 30,
+            ..Default::default()
+        }
+    }
+
+    pub fn uhd_4k_60fps() -> Self {
+        Self {
+            video_codec: VideoCodec::H265,
+            video_bitrate: 40_000_000, // 40 Mbps for 4K@60fps
+            video_width: 3840,
+            video_height: 2160,
+            video_framerate: 60,
+            ..Default::default()
         }
     }
 }
@@ -153,6 +221,7 @@ struct StreamPipelineInner {
     output_host: Option<String>,
     output_port: Option<u16>,
     _audio_appsrc: Option<AppSrc>, // Optional audio input
+    bus_watch_guard: Option<gst::bus::BusWatchGuard>, // Bus watch guard to prevent leaks
 }
 
 impl StreamPipelineInner {
@@ -174,11 +243,13 @@ impl StreamPipelineInner {
 
         let videoconvert = gst::ElementFactory::make("videoconvert").build()?;
 
-        let x264enc = gst::ElementFactory::make("x264enc").build()?;
+        // Create encoder based on codec
+        let encoder = gst::ElementFactory::make(config.video_codec.gstreamer_encoder()).build()?;
 
-        let h264parse = gst::ElementFactory::make("h264parse").build()?;
-
-        let rtph264pay = gst::ElementFactory::make("rtph264pay").build()?;
+        // Create parser based on codec
+        let parser = gst::ElementFactory::make(config.video_codec.parser()).build()?;
+        // Create RTP payloader based on codec
+        let rtp_pay = gst::ElementFactory::make(config.video_codec.rtp_payloader()).build()?;
 
         let udpsink = gst::ElementFactory::make("udpsink").build()?;
 
@@ -186,11 +257,30 @@ impl StreamPipelineInner {
         appsrc.set_property("is-live", true);
         appsrc.set_property("format", gst::Format::Time);
 
-        // Configure x264enc for low latency
-        x264enc.set_property_from_str("tune", "zerolatency");
-        x264enc.set_property_from_str("speed-preset", "veryfast");
-        x264enc.set_property_from_str("bitrate", &(config.video_bitrate / 1000).to_string());
-        x264enc.set_property_from_str("key-int-max", &(config.video_framerate * 2).to_string());
+        // Configure encoder for low latency - different options per codec
+        match config.video_codec {
+            VideoCodec::H264 => {
+                encoder.set_property_from_str("tune", "zerolatency");
+                encoder.set_property_from_str("speed-preset", "veryfast");
+            }
+            VideoCodec::H265 => {
+                // x265enc options for low latency
+                encoder.set_property_from_str("tune", "zero-latency");
+                encoder.set_property_from_str("speed-preset", "fast"); // fast preset since "veryfast" may not be available
+            }
+            VideoCodec::AV1 => {
+                // SVT-AV1 options for low latency
+                encoder.set_property("preset", 8); // speed preset for low latency
+                encoder.set_property("target-bitrate", config.video_bitrate as i32 / 1000);
+            }
+        }
+
+        // Set common bitrate regardless of codec type
+        if !matches!(config.video_codec, VideoCodec::AV1) {
+            // For AV1, bitrate is set differently as shown above
+            encoder.set_property_from_str("bitrate", &(config.video_bitrate / 1000).to_string());
+        }
+        encoder.set_property_from_str("key-int-max", &(config.video_framerate * 2).to_string());
 
         // Configure udpsink (will be updated via set_output)
         udpsink.set_property_from_str("host", "127.0.0.1"); // placeholder
@@ -202,9 +292,9 @@ impl StreamPipelineInner {
         pipeline.add_many([
             appsrc.upcast_ref::<gst::Element>(),
             &videoconvert,
-            &x264enc,
-            &h264parse,
-            &rtph264pay,
+            &encoder,
+            &parser,
+            &rtp_pay,
             &udpsink,
         ])?;
 
@@ -214,28 +304,73 @@ impl StreamPipelineInner {
                 "Failed to link appsrc to videoconvert".to_string(),
             ));
         }
-        if videoconvert.link(&x264enc).is_err() {
+        if videoconvert.link(&encoder).is_err() {
             return Err(StreamError::PipelineConstruction(
-                "Failed to link videoconvert to x264enc".to_string(),
+                "Failed to link videoconvert to encoder".to_string(),
             ));
         }
-        if x264enc.link(&h264parse).is_err() {
+        if encoder.link(&parser).is_err() {
             return Err(StreamError::PipelineConstruction(
-                "Failed to link x264enc to h264parse".to_string(),
+                "Failed to link encoder to parser".to_string(),
             ));
         }
-        if h264parse.link(&rtph264pay).is_err() {
+        if parser.link(&rtp_pay).is_err() {
             return Err(StreamError::PipelineConstruction(
-                "Failed to link h264parse to rtph264pay".to_string(),
+                "Failed to link parser to rtp payloader".to_string(),
             ));
         }
-        if rtph264pay.link(&udpsink).is_err() {
+        if rtp_pay.link(&udpsink).is_err() {
             return Err(StreamError::PipelineConstruction(
-                "Failed to link rtph264pay to udpsink".to_string(),
+                "Failed to link rtp payloader to udpsink".to_string(),
             ));
         }
 
-        setup_bus_handler(&pipeline)?;
+        // Set up bus watch to handle messages from the pipeline
+        let bus_watch_guard = {
+            let bus = pipeline
+                .bus()
+                .ok_or_else(|| StreamError::Internal("Pipeline has no bus".to_string()))?;
+
+            bus.add_watch_local(move |_, msg| {
+                match msg.view() {
+                    gst::MessageView::Error(err) => {
+                        tracing::error!(
+                            "GStreamer error: {}, details: {:?}",
+                            err.error(),
+                            err.debug()
+                        );
+                    }
+                    gst::MessageView::Warning(warn) => {
+                        tracing::warn!(
+                            "GStreamer warning: {}, details: {:?}",
+                            warn.error(),
+                            warn.debug()
+                        );
+                    }
+                    gst::MessageView::Info(info) => {
+                        tracing::info!("GStreamer info: {:?}", info.error());
+                    }
+                    gst::MessageView::StateChanged(state_changed) => {
+                        let src = state_changed
+                            .src()
+                            .map(|s| s.path_string())
+                            .unwrap_or_else(|| "unknown".into());
+                        tracing::debug!(
+                            "State changed: {} - {:?} -> {:?}",
+                            src,
+                            state_changed.old(),
+                            state_changed.current()
+                        );
+                    }
+                    gst::MessageView::Eos(_) => {
+                        tracing::info!("Stream end-of-stream reached");
+                    }
+                    _ => {}
+                }
+                gstreamer::glib::ControlFlow::Continue
+            })
+            .map_err(|e| StreamError::Internal(format!("Failed to add bus watch: {}", e)))?
+        };
 
         Ok(StreamPipelineInner {
             pipeline,
@@ -245,6 +380,7 @@ impl StreamPipelineInner {
             output_host: None,
             output_port: None,
             _audio_appsrc: None,
+            bus_watch_guard: Some(bus_watch_guard),
         })
     }
 
@@ -337,9 +473,15 @@ impl StreamPipelineInner {
 
 impl Drop for StreamPipelineInner {
     fn drop(&mut self) {
+        // Stop the pipeline by setting it to Null state
         if self.state != PipelineState::Null {
             let _ = self.pipeline.set_state(gst::State::Null);
         }
+
+        // The bus watch guard will be automatically dropped here,
+        // which will cleanly remove the bus watch callback
+        // Explicitly take() it to be clear we're dropping it
+        self.bus_watch_guard.take();
     }
 }
 
@@ -421,54 +563,6 @@ impl fmt::Display for PipelineState {
 }
 
 /// Add bus handling function for monitoring pipeline events
-fn setup_bus_handler(pipeline: &gst::Pipeline) -> Result<(), StreamError> {
-    let bus = pipeline
-        .bus()
-        .ok_or_else(|| StreamError::Internal("Pipeline has no bus".to_string()))?;
-    let _watch_guard = bus
-        .add_watch_local(move |_, msg| {
-            match msg.view() {
-                gst::MessageView::Error(err) => {
-                    tracing::error!(
-                        "GStreamer error: {}, details: {:?}",
-                        err.error(),
-                        err.debug()
-                    );
-                }
-                gst::MessageView::Warning(warn) => {
-                    tracing::warn!(
-                        "GStreamer warning: {}, details: {:?}",
-                        warn.error(),
-                        warn.debug()
-                    );
-                }
-                gst::MessageView::Info(info) => {
-                    tracing::info!("GStreamer info: {:?}", info.error());
-                }
-                gst::MessageView::StateChanged(state_changed) => {
-                    let src = state_changed
-                        .src()
-                        .map(|s| s.path_string())
-                        .unwrap_or_else(|| "unknown".into());
-                    tracing::debug!(
-                        "State changed: {} - {:?} -> {:?}",
-                        src,
-                        state_changed.old(),
-                        state_changed.current()
-                    );
-                }
-                gst::MessageView::Eos(_) => {
-                    tracing::info!("Stream end-of-stream reached");
-                }
-                _ => {}
-            }
-            gstreamer::glib::ControlFlow::Continue
-        })
-        .map_err(|e| StreamError::Internal(format!("Failed to add bus watch: {}", e)))?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +655,44 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "test");
         let stream_err: StreamError = io_err.into();
         assert!(matches!(stream_err, StreamError::Io(_)));
+    }
+
+    #[test]
+    fn test_video_codec_functions() {
+        // Test H.264
+        assert_eq!(VideoCodec::H264.gstreamer_encoder(), "x264enc");
+        assert_eq!(VideoCodec::H264.rtp_payloader(), "rtph264pay");
+        assert_eq!(VideoCodec::H264.parser(), "h264parse");
+        assert_eq!(VideoCodec::H264.caps_name(), "video/x-h264");
+
+        // Test H.265
+        assert_eq!(VideoCodec::H265.gstreamer_encoder(), "x265enc");
+        assert_eq!(VideoCodec::H265.rtp_payloader(), "rtph265pay");
+        assert_eq!(VideoCodec::H265.parser(), "h265parse");
+        assert_eq!(VideoCodec::H265.caps_name(), "video/x-h265");
+
+        // Test AV1
+        assert_eq!(VideoCodec::AV1.gstreamer_encoder(), "svtav1enc");
+        assert_eq!(VideoCodec::AV1.rtp_payloader(), "rtpav1pay");
+        assert_eq!(VideoCodec::AV1.parser(), "av1parse");
+        assert_eq!(VideoCodec::AV1.caps_name(), "video/x-av1");
+    }
+
+    #[test]
+    fn test_4k_presets() {
+        // Test 4K resolution presets
+        let config_4k = StreamConfig::uhd_4k();
+        assert_eq!(config_4k.video_codec, VideoCodec::H265);
+        assert_eq!(config_4k.video_width, 3840);
+        assert_eq!(config_4k.video_height, 2160);
+        assert_eq!(config_4k.video_bitrate, 20_000_000);
+        assert_eq!(config_4k.video_framerate, 30);
+
+        let config_4k_60fps = StreamConfig::uhd_4k_60fps();
+        assert_eq!(config_4k_60fps.video_codec, VideoCodec::H265);
+        assert_eq!(config_4k_60fps.video_width, 3840);
+        assert_eq!(config_4k_60fps.video_height, 2160);
+        assert_eq!(config_4k_60fps.video_bitrate, 40_000_000);
+        assert_eq!(config_4k_60fps.video_framerate, 60);
     }
 }

@@ -164,8 +164,18 @@ pub fn check_gstreamer() -> anyhow::Result<CheckResult> {
 
     match output {
         Ok(o) if o.status.success() => {
-            // Now check for required plugins
-            let plugins_needed = ["openh264", "x264", "h264parse", "rtph264pay"];
+            // Now check for required plugins for H.264, H.265, and AV1
+            let plugins_needed = [
+                "x264",       // H.264 encoding
+                "x265",       // H.265 encoding (for 4K)
+                "h264parse",  // H.264 parsing
+                "h265parse",  // H.265 parsing
+                "rtph264pay", // H.264 RTP payloader
+                "rtph265pay", // H.265 RTP payloader
+                "av1parse",   // AV1 parsing
+                "rtpav1pay",  // AV1 RTP payloader
+                "svtav1enc",  // SVT-AV1 encoder
+            ];
             let mut missing = Vec::new();
 
             for plugin in plugins_needed.iter() {
@@ -179,7 +189,7 @@ pub fn check_gstreamer() -> anyhow::Result<CheckResult> {
 
             if missing.is_empty() {
                 Ok(CheckResult::ok(
-                    "GStreamer and required H.264 encoding plugins found",
+                    "GStreamer and required encoding plugins (H.264, H.265, AV1) found",
                 ))
             } else {
                 let msg = format!(

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_util::sync::CancellationToken;
 
 /// Wi-Fi Display (WFD) capabilities structure containing device display and streaming properties
 ///
@@ -614,6 +615,8 @@ pub struct RtspServer {
     address: String,
     /// Thread-safe collection of active sessions indexed by session ID
     sessions: Arc<parking_lot::RwLock<HashMap<String, RtspSession>>>,
+    /// Token used to signal cancellation for graceful server shutdown
+    cancellation_token: CancellationToken,
 }
 
 impl RtspServer {
@@ -636,6 +639,7 @@ impl RtspServer {
         RtspServer {
             address,
             sessions: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -647,7 +651,7 @@ impl RtspServer {
     /// the server encounters an unrecoverable error.
     ///
     /// # Returns
-    /// * `Ok(())` - Server shut down successfully (should not occur during normal operation)
+    /// * `Ok(())` - Server shut down successfully on cancellation
     /// * `Err(RtspError::Io)` - Socket binding or connection acceptance failed
     ///
     /// # Examples
@@ -667,23 +671,33 @@ impl RtspServer {
         tracing::info!("RTSP server listening on {}", self.address);
 
         loop {
-            match listener.accept().await {
-                Ok((socket, addr)) => {
-                    tracing::info!("Connection established from {}", addr);
+            tokio::select! {
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, addr)) => {
+                            tracing::info!("Connection established from {}", addr);
 
-                    let sessions = self.sessions.clone();
+                            let sessions = self.sessions.clone();
 
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_connection(socket, sessions).await {
-                            tracing::error!("Error handling connection: {:?}", e);
+                            tokio::spawn(async move {
+                                if let Err(e) = handle_connection(stream, sessions).await {
+                                    tracing::error!("Error handling connection: {:?}", e);
+                                }
+                            });
                         }
-                    });
+                        Err(e) => {
+                            tracing::error!("Failed to accept connection: {:?}", e);
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to accept connection: {:?}", e);
+                _ = self.cancellation_token.cancelled() => {
+                    tracing::info!("RTSP server shutting down");
+                    break;
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Retrieve a session by its ID from the session store
@@ -760,6 +774,20 @@ impl RtspServer {
     /// ```
     pub fn remove_session(&self, session_id: &str) {
         self.sessions.write().remove(session_id);
+    }
+
+    /// Signal the RTSP server to shut down gracefully
+    ///
+    /// Cancels the internal cancellation token which causes the server's start() method
+    /// to exit its main loop. This allows for graceful shutdown of the RTSP server.
+    pub fn stop(&self) {
+        self.cancellation_token.cancel();
+    }
+}
+
+impl Drop for RtspServer {
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
     }
 }
 
@@ -952,5 +980,40 @@ mod tests {
 
         session.transition_to(SessionState::Play);
         assert_eq!(session.state, SessionState::Play);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_mechanism() {
+        // Create a test server
+        let server = RtspServer::new("127.0.0.1:0".to_string());
+        let server_handle = server.cancellation_token.clone();
+
+        // Spawn a task to test the cancellation token functionality
+        let shutdown_task = tokio::spawn(async move {
+            // Server will wait for cancellation token
+            server_handle.cancelled().await;
+            // If we get here, cancellation worked
+            42 // arbitrary value to show the task completed
+        });
+
+        // Give a small delay, then trigger shutdown
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        server.stop();
+
+        // Wait for task to complete (indicating cancellation was triggered)
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), shutdown_task).await;
+        assert!(result.is_ok(), "Cancellation task should have completed");
+
+        let final_result = result.unwrap();
+        assert!(
+            final_result.is_ok(),
+            "Task should have completed successfully"
+        );
+        assert_eq!(
+            final_result.unwrap(),
+            42,
+            "Should return our expected value"
+        );
     }
 }

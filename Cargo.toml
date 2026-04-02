@@ -19,6 +19,8 @@ repository = "https://github.com/forkline/sway-miracast"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
+# Note: tokio-util does not have a top-level sync feature, the features are io, codec, etc.
+tokio-util = { version = "0.7" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
