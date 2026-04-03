@@ -773,13 +773,16 @@ impl Daemon {
         }
 
         info!(
-            "Sent HDCP AKE_No_Stored_km for receiver_id={} repeater={}",
+            "Sent HDCP AKE_No_Stored_km for receiver_id={} repeater={} exponent={:02x}{:02x}{:02x}",
             cert.receiver_id
                 .iter()
                 .map(|byte| format!("{:02x}", byte))
                 .collect::<Vec<_>>()
                 .join(""),
-            cert.repeater
+            cert.repeater,
+            cert.exponent[0],
+            cert.exponent[1],
+            cert.exponent[2]
         );
 
         Some(km)
@@ -1056,7 +1059,7 @@ impl Daemon {
 
     fn compute_hdcp_ctr_block(key: &[u8; 16], iv: &[u8; 16]) -> [u8; 16] {
         let mut block = [0u8; 16];
-        let mut cipher = ctr::Ctr128BE::<Aes128>::new(key.into(), iv.into());
+        let mut cipher = ctr::Ctr128LE::<Aes128>::new(key.into(), iv.into());
         cipher.apply_keystream(&mut block);
         block
     }
@@ -1438,6 +1441,32 @@ mod tests {
     use super::Daemon;
 
     #[test]
+    fn test_aes_ctr_kd_derivation() {
+        let rtx: [u8; 8] = [0x35, 0xc7, 0x23, 0xc8, 0xf9, 0x19, 0xbe, 0x44];
+        let km: [u8; 16] = [
+            0x08, 0x9c, 0x19, 0xd2, 0x39, 0x15, 0x86, 0xf0, 0x16, 0x05, 0x5a, 0x21, 0x39, 0x52,
+            0xd7, 0x62,
+        ];
+
+        let kd = Daemon::compute_hdcp_kd(&rtx, &km);
+
+        let kd_hex: String = kd.iter().map(|b| format!("{:02x}", b)).collect();
+        eprintln!("Kd: {}", kd_hex);
+
+        assert_eq!(
+            kd_hex,
+            "e9da8dc5f71ab59aab9839c28d26ab6a5283a2a6db01713109424514d67fe913"
+        );
+    }
+
+    #[test]
+    fn recognizes_l_prime_message_length() {
+        let read_buffer = vec![0x0a; 33];
+
+        assert_eq!(Daemon::hdcp_message_length(&read_buffer), Some(33));
+    }
+
+    #[test]
     fn extracts_fixed_size_hdcp_message_without_consuming_next_one() {
         let mut read_buffer = vec![
             0x14, 0x00, 0x06, 0x03, 0x00, 0x01, 0x06, 1, 2, 3, 4, 5, 6, 7, 8,
@@ -1454,12 +1483,5 @@ mod tests {
         let read_buffer = vec![0x07, 0x00, 0x01];
 
         assert_eq!(Daemon::hdcp_message_length(&read_buffer), None);
-    }
-
-    #[test]
-    fn recognizes_l_prime_message_length() {
-        let read_buffer = vec![0x0a; 33];
-
-        assert_eq!(Daemon::hdcp_message_length(&read_buffer), Some(33));
     }
 }
