@@ -632,14 +632,10 @@ impl Daemon {
         let mut ake_init = [0u8; 9];
         ake_init[0] = 0x02;
         rand::thread_rng().fill_bytes(&mut ake_init[1..]);
-        let transmitter_info = Self::hdcp_transmitter_info_message();
-        let mut ake_start = Vec::with_capacity(ake_init.len() + transmitter_info.len());
-        ake_start.extend_from_slice(&ake_init);
-        ake_start.extend_from_slice(&transmitter_info);
         let mut read_buffer = Vec::new();
 
         if !self
-            .write_hdcp_message(hdcp_stream, &ake_start, "AKE_Init/AKE_Transmitter_Info")
+            .write_hdcp_message(hdcp_stream, &ake_init, "AKE_Init")
             .await
         {
             return;
@@ -653,9 +649,6 @@ impl Daemon {
                 .collect::<Vec<_>>()
                 .join("")
         );
-        info!(
-            "Sent HDCP AKE_Transmitter_Info version=2 capabilities=0x0000 immediately after AKE_Init"
-        );
 
         if let Some(message) = self
             .read_hdcp_message(hdcp_stream, &mut read_buffer, Duration::from_millis(800))
@@ -665,6 +658,18 @@ impl Daemon {
             self.log_hdcp_message(&message);
 
             if let Some(cert) = cert {
+                // For HDCP 2.2+, send AKE_Transmitter_Info after receiving cert
+                let transmitter_info = Self::hdcp_transmitter_info_message();
+                if !self
+                    .write_hdcp_message(hdcp_stream, &transmitter_info, "AKE_Transmitter_Info")
+                    .await
+                {
+                    return;
+                }
+                info!(
+                    "Sent HDCP AKE_Transmitter_Info version=3 capabilities=0x0000 after AKE_Send_Cert"
+                );
+
                 if let Some(km) = self.send_hdcp_no_stored_km(hdcp_stream, &cert).await {
                     let mut rtx = [0u8; 8];
                     rtx.copy_from_slice(&ake_init[1..]);
@@ -724,7 +729,7 @@ impl Daemon {
     }
 
     fn hdcp_transmitter_info_message() -> [u8; 6] {
-        [0x13_u8, 0x00, 0x06, 0x02, 0x00, 0x00]
+        [0x13_u8, 0x00, 0x06, 0x03, 0x00, 0x00]
     }
 
     async fn send_hdcp_no_stored_km(
