@@ -535,7 +535,7 @@ impl RtspSession {
 
                         // Prepare response with server parameters
                         return Ok(format!(
-                            "Transport: RTP/AVP/UDP;unicast;client_port={};server_port=5004-5005\r\nSession: {};timeout=30\r\n", 
+                            "Transport: RTP/AVP/UDP;unicast;client_port={};server_port=5004-5005\r\nSession: {};timeout=30\r\n",
                             port_range, self.session_id
                         ));
                     }
@@ -985,6 +985,10 @@ impl RtspClient {
 
     fn control_uri(&self) -> String {
         format!("rtsp://{}/wfd1.0", self.server_addr)
+    }
+
+    pub fn server_addr(&self) -> &str {
+        &self.server_addr
     }
 
     fn stream_uri(&self) -> String {

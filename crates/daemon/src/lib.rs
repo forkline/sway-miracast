@@ -17,10 +17,7 @@ use tracing::{debug, error, info};
 use swaybeam_capture::Capture;
 use swaybeam_doctor::{check_all, Report as DoctorReport};
 use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
-use swaybeam_rtsp::{
-    parse_wfd_client_rtp_port, parse_wfd_content_protection_port, NegotiatedCodec, RtspClient,
-    RtspServer, SetupResult,
-};
+use swaybeam_rtsp::{parse_wfd_client_rtp_port, NegotiatedCodec, RtspClient, RtspServer};
 use swaybeam_stream::{
     AudioCodec, StreamConfig, StreamPipeline, TestPatternConfig, TestPatternGenerator, VideoCodec,
 };
@@ -88,6 +85,7 @@ pub enum DaemonEvent {
     Ended,
 }
 
+#[allow(dead_code)]
 struct HdcpReceiverCert {
     repeater: bool,
     receiver_id: [u8; 5],
@@ -95,6 +93,7 @@ struct HdcpReceiverCert {
     exponent: [u8; 3],
 }
 
+#[allow(dead_code)]
 struct HdcpSessionMaterial {
     rtx: [u8; 8],
     km: [u8; 16],
@@ -119,6 +118,7 @@ impl Default for Daemon {
     }
 }
 
+#[allow(dead_code)]
 impl Daemon {
     pub fn with_config(config: DaemonConfig) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -494,50 +494,42 @@ impl Daemon {
                 .await?;
 
         let sink_caps = self.exchange_rtsp_capabilities(&mut rtsp_client).await?;
-        if let Some(destination_rtp_port) = sink_caps
-            .get("wfd_client_rtp_ports")
-            .and_then(|value| parse_wfd_client_rtp_port(value))
-        {
-            let local_ip = self
-                .connection
-                .as_ref()
-                .and_then(|conn| conn.get_sink().ip_address.clone());
-            self.hdcp_stream = self
-                .try_connect_hdcp(
-                    go_ip,
-                    sink_caps
-                        .get("wfd_content_protection")
-                        .and_then(|value| parse_wfd_content_protection_port(value)),
-                    local_ip.as_deref(),
-                )
-                .await;
-            if let Some(ref hdcp_stream) = self.hdcp_stream {
-                self.start_hdcp_session(hdcp_stream).await;
-            }
-            let session_id = rtsp_client.adopt_peer_session().to_string();
-            info!(
-                "Using sink-advertised RTP destination {}:{} for reverse RTSP mode with session {}",
-                go_ip, destination_rtp_port, session_id
-            );
-            rtsp_client.send_play().await?;
-            info!("Sent implicit PLAY over reverse RTSP control connection");
 
-            *self.state.write() = DaemonState::Streaming;
-            self.start_negotiated_stream(
-                self.get_negotiated_codec(&sink_caps),
-                go_ip,
-                destination_rtp_port,
-            )
-            .await?;
-            info!("Stream pipeline configured in reverse RTSP mode");
-            return Ok(());
-        }
+        let sink_rtp_port = sink_caps
+            .get("wfd_client_rtp_ports")
+            .and_then(|value| parse_wfd_client_rtp_port(value));
+
+        let local_ip = self
+            .connection
+            .as_ref()
+            .and_then(|conn| conn.get_sink().ip_address.clone());
+
+        let rtp_port = sink_rtp_port.unwrap_or(5004);
+
+        let presentation_url = format!(
+            "rtsp://{}/wfd1.0/streamid=0 none",
+            local_ip.as_deref().unwrap_or(go_ip)
+        );
+
+        let mut trigger_params = std::collections::HashMap::new();
+        trigger_params.insert("wfd_presentation_URL".to_string(), presentation_url.clone());
+        trigger_params.insert(
+            "wfd_client_rtp_ports".to_string(),
+            format!("RTP/AVP/UDP;unicast {} 0 mode=play", rtp_port),
+        );
+        rtsp_client.send_set_parameter(&trigger_params).await?;
+        info!("Sent wfd_presentation_URL and wfd_client_rtp_ports");
+
+        let mut trigger_params = std::collections::HashMap::new();
+        trigger_params.insert("wfd_trigger_method".to_string(), "SETUP".to_string());
+        rtsp_client.send_set_parameter(&trigger_params).await?;
+        info!("Sent wfd_trigger_method: SETUP — waiting for TV to initiate SETUP and PLAY");
 
         let play_info = rtsp_client
             .wait_for_peer_play(Duration::from_secs(15))
             .await?;
         info!(
-            "Peer initiated RTSP PLAY, streaming to {}:{}",
+            "TV initiated SETUP+PLAY, streaming to {}:{}",
             play_info.dest_ip, play_info.dest_port
         );
 
@@ -1354,18 +1346,50 @@ impl Daemon {
     ) -> anyhow::Result<()> {
         let sink_caps = self.exchange_rtsp_capabilities(rtsp_client).await?;
 
-        let desired_rtp_port = 5004;
-        let setup_result: SetupResult = rtsp_client.send_setup(desired_rtp_port).await?;
-        info!("SETUP result: {:?}", setup_result);
+        let sink_rtp_port = sink_caps
+            .get("wfd_client_rtp_ports")
+            .and_then(|value| parse_wfd_client_rtp_port(value));
 
-        rtsp_client.send_play().await?;
-        info!("Sent PLAY over RTSP control connection");
+        let local_ip = self
+            .connection
+            .as_ref()
+            .and_then(|conn| conn.get_sink().ip_address.clone());
+
+        let server_addr = rtsp_client.server_addr();
+        let rtp_port = sink_rtp_port.unwrap_or(5004);
+
+        let presentation_url = format!(
+            "rtsp://{}/wfd1.0/streamid=0 none",
+            local_ip.as_deref().unwrap_or(server_addr)
+        );
+
+        let mut trigger_params = std::collections::HashMap::new();
+        trigger_params.insert("wfd_presentation_URL".to_string(), presentation_url.clone());
+        trigger_params.insert(
+            "wfd_client_rtp_ports".to_string(),
+            format!("RTP/AVP/UDP;unicast {} 0 mode=play", rtp_port),
+        );
+        rtsp_client.send_set_parameter(&trigger_params).await?;
+        info!("Sent wfd_presentation_URL and wfd_client_rtp_ports");
+
+        let mut trigger_params = std::collections::HashMap::new();
+        trigger_params.insert("wfd_trigger_method".to_string(), "SETUP".to_string());
+        rtsp_client.send_set_parameter(&trigger_params).await?;
+        info!("Sent wfd_trigger_method: SETUP — waiting for TV to initiate SETUP and PLAY");
+
+        let play_info = rtsp_client
+            .wait_for_peer_play(Duration::from_secs(15))
+            .await?;
+        info!(
+            "TV initiated SETUP+PLAY, streaming to {}:{}",
+            play_info.dest_ip, play_info.dest_port
+        );
 
         *self.state.write() = DaemonState::Streaming;
         self.start_negotiated_stream(
             self.get_negotiated_codec(&sink_caps),
-            &setup_result.destination_ip,
-            setup_result.destination_rtp_port,
+            &play_info.dest_ip,
+            play_info.dest_port,
         )
         .await?;
         info!("Stream pipeline configured in RTSP client mode");
