@@ -113,3 +113,51 @@ cargo run --example snap -p swaybeam-capture --features real_portal
 # Successfully captures at 1920x1080
 # Uses: pipewiresrc fd=X target-object=xdg-desktop-portal-wlr ...
 ```
+
+---
+
+# Fix Applied (April 5, 2026 - continued)
+
+## Solution: Set `path` Property Programmatically
+
+Based on research from multiple subagents investigating:
+
+1. **pipewiresrc source code** - The `fd` only authenticates, `path` selects node
+2. **gnome-network-displays** - Working Miracast implementation uses `fd` + `path`
+3. **PipeWire portal docs** - The fd is restricted to only see portal nodes
+
+### Changes Made
+
+**Commit a65c86b:**
+```rust
+pipewiresrc.set_property("fd", fd);
+pipewiresrc.set_property("path", node_id.to_string());
+pipewiresrc.set_property("do-timestamp", true);
+pipewiresrc_base.set_live(true);
+```
+
+### Key Insights
+
+1. **fd ≠ node selection**: The fd authenticates the PipeWire core connection, but doesn't select which node to stream from
+2. **path = node_id**: The `path` property (not `target-object`) specifies which PipeWire node to connect to
+3. **Restricted visibility**: The portal fd only shows the screencast node, but pipewiresrc needs explicit `path` to find it
+4. **Programmatic setup**: gnome-network-displays uses `g_object_set()` rather than pipeline strings
+
+### Testing Required
+
+The user needs to test with the LG TV in "Screen Share" mode:
+
+```bash
+# Put TV in Screen Share mode first
+systemctl --user restart xdg-desktop-portal-wlr.service && sleep 1 && \
+systemctl --user restart xdg-desktop-portal.service && sleep 3
+
+env XDG_CURRENT_DESKTOP=sway \
+  target/release/swaybeam daemon --sink <TV_MAC> --client
+
+# Expected: 1920x1080 resolution (not 640x480 webcam)
+```
+
+The fix should result in:
+- `pipewiresrc negotiated caps: ... width=(int)1920, height=(int)1080 ...`
+- TV showing actual screen content instead of webcam
