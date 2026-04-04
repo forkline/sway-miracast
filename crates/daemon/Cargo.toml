@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 swaybeam-doctor = { path = "../doctor" }
-swaybeam-capture = { path = "../capture" }
+swaybeam-capture = { path = "../capture", features = ["real_portal"] }
 swaybeam-stream = { path = "../stream" }
 swaybeam-net = { path = "../net" }
 swaybeam-rtsp = { path = "../rtsp" }

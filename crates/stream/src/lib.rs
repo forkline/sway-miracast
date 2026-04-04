@@ -1,4 +1,5 @@
 use std::fmt;
+use std::os::unix::io::RawFd;
 mod test_pattern;
 pub use test_pattern::{Frame, TestPatternConfig, TestPatternGenerator};
 
@@ -216,14 +217,14 @@ impl From<gst::glib::error::Error> for StreamError {
 /// GStreamer pipeline wrapper for Miracast streaming
 struct StreamPipelineInner {
     pipeline: gst::Pipeline,
-    appsrc: AppSrc,
+    appsrc: Option<AppSrc>,
     #[allow(dead_code)]
     config: StreamConfig,
     state: PipelineState,
     output_host: Option<String>,
     output_port: Option<u16>,
-    _audio_appsrc: Option<AppSrc>, // Optional audio input
-    bus_watch_guard: Option<gst::bus::BusWatchGuard>, // Bus watch guard to prevent leaks
+    _audio_appsrc: Option<AppSrc>,
+    bus_watch_guard: Option<gst::bus::BusWatchGuard>,
 }
 
 impl StreamPipelineInner {
@@ -446,7 +447,220 @@ impl StreamPipelineInner {
 
         Ok(StreamPipelineInner {
             pipeline,
-            appsrc,
+            appsrc: Some(appsrc),
+            config,
+            state: PipelineState::Null,
+            output_host: None,
+            output_port: None,
+            _audio_appsrc: None,
+            bus_watch_guard: Some(bus_watch_guard),
+        })
+    }
+
+    pub fn new_pipewire(
+        config: StreamConfig,
+        fd: RawFd,
+        node_id: u32,
+    ) -> Result<Self, StreamError> {
+        gst::init()?;
+
+        let pipeline = gst::Pipeline::builder().name("miracast-stream-pw").build();
+
+        let pipewiresrc = gst::ElementFactory::make("pipewiresrc")
+            .name("video-source")
+            .build()?;
+        pipewiresrc.set_property("fd", fd);
+        pipewiresrc.set_property("target-object", format!("{}", node_id));
+        pipewiresrc.set_property("do-timestamp", true);
+
+        let videoconvert = gst::ElementFactory::make("videoconvert").build()?;
+
+        let encoder = gst::ElementFactory::make(config.video_codec.gstreamer_encoder()).build()?;
+
+        let parser = gst::ElementFactory::make(config.video_codec.parser()).build()?;
+
+        let codec_caps = gst::Caps::builder("video/x-h264")
+            .field("stream-format", "byte-stream")
+            .field("profile", "constrained-baseline")
+            .build();
+        let codecfilter = gst::ElementFactory::make("capsfilter")
+            .name("codecfilter")
+            .build()?;
+        codecfilter.set_property("caps", &codec_caps);
+
+        let queue_mux = gst::ElementFactory::make("queue")
+            .name("queue-mux-video")
+            .build()?;
+        queue_mux.set_property("max-size-buffers", 1000u32);
+        queue_mux.set_property("max-size-time", 500_000_000u64);
+
+        let mpegtsmux = gst::ElementFactory::make("mpegtsmux")
+            .name("mpegtsmux")
+            .build()?;
+        mpegtsmux.set_property("alignment", 7i32);
+
+        let queue_pay = gst::ElementFactory::make("queue")
+            .name("queue-pre-payloader")
+            .build()?;
+        queue_pay.set_property("max-size-buffers", 1u32);
+
+        let rtp_pay = gst::ElementFactory::make(config.video_codec.rtp_payloader())
+            .name("pay0")
+            .build()?;
+        rtp_pay.set_property("ssrc", 1u32);
+        rtp_pay.set_property("perfect-rtptime", false);
+        rtp_pay.set_property("timestamp-offset", 0u32);
+        rtp_pay.set_property("seqnum-offset", 0i32);
+
+        let udpsink = gst::ElementFactory::make("udpsink")
+            .name("udpsink")
+            .build()?;
+
+        match config.video_codec {
+            VideoCodec::H264 => {
+                encoder.set_property_from_str("tune", "zerolatency");
+                encoder.set_property_from_str("speed-preset", "veryfast");
+            }
+            VideoCodec::H265 => {
+                encoder.set_property_from_str("tune", "zerolatency");
+                encoder.set_property_from_str("speed-preset", "fast");
+            }
+            VideoCodec::AV1 => {
+                encoder.set_property("preset", 8i32);
+                encoder.set_property("target-bitrate", (config.video_bitrate / 1000) as i32);
+            }
+        }
+
+        if !matches!(config.video_codec, VideoCodec::AV1) {
+            encoder.set_property_from_str("bitrate", &(config.video_bitrate / 1000).to_string());
+        }
+        encoder.set_property_from_str("key-int-max", &(config.video_framerate * 2).to_string());
+
+        parser.set_property("config-interval", -1i32);
+
+        udpsink.set_property_from_str("host", "127.0.0.1");
+        udpsink.set_property_from_str("port", "5004");
+        udpsink.set_property("sync", false);
+        udpsink.set_property("async", false);
+
+        pipeline.add_many([
+            &pipewiresrc,
+            &videoconvert,
+            &encoder,
+            &parser,
+            &codecfilter,
+            &queue_mux,
+            &mpegtsmux,
+            &queue_pay,
+            &rtp_pay,
+            &udpsink,
+        ])?;
+
+        if pipewiresrc.link(&videoconvert).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link pipewiresrc to videoconvert".to_string(),
+            ));
+        }
+        if videoconvert.link(&encoder).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link videoconvert to encoder".to_string(),
+            ));
+        }
+        if encoder.link(&parser).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link encoder to parser".to_string(),
+            ));
+        }
+        if parser.link(&codecfilter).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link parser to codecfilter".to_string(),
+            ));
+        }
+        if codecfilter.link(&queue_mux).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link codecfilter to queue_mux".to_string(),
+            ));
+        }
+
+        let queue_mux_src = queue_mux.static_pad("src").ok_or_else(|| {
+            StreamError::PipelineConstruction("Failed to get queue_mux src pad".to_string())
+        })?;
+        let mpegtsmux_sink = mpegtsmux.request_pad_simple("sink_4113").ok_or_else(|| {
+            StreamError::PipelineConstruction(
+                "Failed to request sink_4113 pad from mpegtsmux".to_string(),
+            )
+        })?;
+        if queue_mux_src.link(&mpegtsmux_sink).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link queue_mux to mpegtsmux".to_string(),
+            ));
+        }
+
+        if mpegtsmux.link(&queue_pay).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link mpegtsmux to queue_pay".to_string(),
+            ));
+        }
+        if queue_pay.link(&rtp_pay).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link queue_pay to rtp_pay".to_string(),
+            ));
+        }
+        if rtp_pay.link(&udpsink).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link rtp_pay to udpsink".to_string(),
+            ));
+        }
+
+        let bus_watch_guard = {
+            let bus = pipeline
+                .bus()
+                .ok_or_else(|| StreamError::Internal("Pipeline has no bus".to_string()))?;
+
+            bus.add_watch_local(move |_, msg| {
+                match msg.view() {
+                    gst::MessageView::Error(err) => {
+                        tracing::error!(
+                            "GStreamer error: {}, details: {:?}",
+                            err.error(),
+                            err.debug()
+                        );
+                    }
+                    gst::MessageView::Warning(warn) => {
+                        tracing::warn!(
+                            "GStreamer warning: {}, details: {:?}",
+                            warn.error(),
+                            warn.debug()
+                        );
+                    }
+                    gst::MessageView::Info(info) => {
+                        tracing::info!("GStreamer info: {:?}", info.error());
+                    }
+                    gst::MessageView::StateChanged(state_changed) => {
+                        let src = state_changed
+                            .src()
+                            .map(|s| s.path_string())
+                            .unwrap_or_else(|| "unknown".into());
+                        tracing::debug!(
+                            "State changed: {} - {:?} -> {:?}",
+                            src,
+                            state_changed.old(),
+                            state_changed.current()
+                        );
+                    }
+                    gst::MessageView::Eos(_) => {
+                        tracing::info!("Stream end-of-stream reached");
+                    }
+                    _ => {}
+                }
+                gstreamer::glib::ControlFlow::Continue
+            })
+            .map_err(|e| StreamError::Internal(format!("Failed to add bus watch: {}", e)))?
+        };
+
+        Ok(StreamPipelineInner {
+            pipeline,
+            appsrc: None,
             config,
             state: PipelineState::Null,
             output_host: None,
@@ -487,20 +701,24 @@ impl StreamPipelineInner {
 
     /// Sets caps for the input
     pub fn set_caps(&self, caps: &gst::Caps) -> Result<(), StreamError> {
-        self.appsrc.set_caps(Some(caps));
+        if let Some(ref appsrc) = self.appsrc {
+            appsrc.set_caps(Some(caps));
+        }
         Ok(())
     }
 
-    /// Pushes a video buffer to the pipeline
     pub fn push_video_buffer(&self, buffer: &gst::Buffer) -> Result<(), StreamError> {
-        let result = self.appsrc.push_buffer(buffer.clone());
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) => Err(StreamError::BufferPush(e.to_string())),
+        if let Some(ref appsrc) = self.appsrc {
+            let result = appsrc.push_buffer(buffer.clone());
+            match result {
+                Ok(_) => Ok(()),
+                Err(e) => Err(StreamError::BufferPush(e.to_string())),
+            }
+        } else {
+            Err(StreamError::BufferPush("No appsrc available".to_string()))
         }
     }
 
-    /// Pushes raw buffer data to the pipeline
     pub fn push_video_data(&self, data: Vec<u8>) -> Result<(), StreamError> {
         let gst_buffer = gst::Buffer::from_slice(data);
         self.push_video_buffer(&gst_buffer)
@@ -564,7 +782,6 @@ pub struct StreamPipeline {
 }
 
 impl StreamPipeline {
-    /// Creates a new StreamPipeline with the given configuration
     pub fn new(config: StreamConfig) -> Result<Self, StreamError> {
         let inner = StreamPipelineInner::new(config)?;
         Ok(StreamPipeline {
@@ -572,46 +789,67 @@ impl StreamPipeline {
         })
     }
 
-    /// Sets the output destination for the stream
+    pub fn new_pipewire(
+        config: StreamConfig,
+        fd: RawFd,
+        node_id: u32,
+    ) -> Result<Self, StreamError> {
+        let inner = StreamPipelineInner::new_pipewire(config, fd, node_id)?;
+        Ok(StreamPipeline {
+            inner: Arc::new(Mutex::new(inner)),
+        })
+    }
+
     pub async fn set_output(&self, host: &str, port: u16) -> Result<(), StreamError> {
         let mut guard = self.inner.lock().await;
         guard.set_output(host, port)
     }
 
-    /// Sets the caps for the input
     pub async fn set_caps(&self, caps: &gst::Caps) -> Result<(), StreamError> {
         let guard = self.inner.lock().await;
         guard.set_caps(caps)
     }
 
-    /// Pushes raw video data to the pipeline
     pub async fn push_video_data(&self, data: Vec<u8>) -> Result<(), StreamError> {
         let guard = self.inner.lock().await;
         guard.push_video_data(data)
     }
 
-    /// Pushes a Gst::Buffer to the pipeline
     pub async fn push_video_buffer(&self, buffer: &gst::Buffer) -> Result<(), StreamError> {
         let guard = self.inner.lock().await;
         guard.push_video_buffer(buffer)
     }
 
-    /// Starts the streaming pipeline
     pub async fn start(&self) -> Result<(), StreamError> {
         let mut guard = self.inner.lock().await;
         guard.start()
     }
 
-    /// Stops the streaming pipeline
     pub async fn stop(&self) -> Result<(), StreamError> {
         let mut guard = self.inner.lock().await;
         guard.stop()
     }
 
-    /// Gets the current pipeline state
     pub async fn state(&self) -> PipelineState {
         let guard = self.inner.lock().await;
         guard.state()
+    }
+
+    pub async fn force_keyframe(&self) -> Result<(), StreamError> {
+        let guard = self.inner.lock().await;
+        let source = guard.pipeline.by_name("video-source").ok_or_else(|| {
+            StreamError::Internal("Failed to find video-source element".to_string())
+        })?;
+        let event = gstreamer_video::UpstreamForceKeyUnitEvent::builder()
+            .all_headers(true)
+            .build();
+        if source.send_event(event) {
+            tracing::debug!("Sent force-key-unit event upstream");
+            Ok(())
+        } else {
+            tracing::warn!("Failed to send force-key-unit event");
+            Ok(())
+        }
     }
 }
 
@@ -740,13 +978,13 @@ mod tests {
     fn test_video_codec_functions() {
         // Test H.264
         assert_eq!(VideoCodec::H264.gstreamer_encoder(), "x264enc");
-        assert_eq!(VideoCodec::H264.rtp_payloader(), "rtph264pay");
+        assert_eq!(VideoCodec::H264.rtp_payloader(), "rtpmp2tpay");
         assert_eq!(VideoCodec::H264.parser(), "h264parse");
         assert_eq!(VideoCodec::H264.caps_name(), "video/x-h264");
 
         // Test H.265
         assert_eq!(VideoCodec::H265.gstreamer_encoder(), "x265enc");
-        assert_eq!(VideoCodec::H265.rtp_payloader(), "rtph265pay");
+        assert_eq!(VideoCodec::H265.rtp_payloader(), "rtpmp2tpay");
         assert_eq!(VideoCodec::H265.parser(), "h265parse");
         assert_eq!(VideoCodec::H265.caps_name(), "video/x-h265");
 

@@ -14,13 +14,11 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
-use swaybeam_capture::Capture;
+use swaybeam_capture::{Capture, CaptureConfig};
 use swaybeam_doctor::{check_all, Report as DoctorReport};
 use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
 use swaybeam_rtsp::{parse_wfd_client_rtp_port, NegotiatedCodec, RtspClient, RtspServer};
-use swaybeam_stream::{
-    AudioCodec, StreamConfig, StreamPipeline, TestPatternConfig, TestPatternGenerator, VideoCodec,
-};
+use swaybeam_stream::{AudioCodec, StreamConfig, StreamPipeline, VideoCodec};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DaemonState {
@@ -1487,47 +1485,32 @@ impl Daemon {
             audio_channels: 2,
         };
 
-        let pipeline = StreamPipeline::new(stream_config)?;
+        let capture_config = CaptureConfig {
+            width: self.config.video_width,
+            height: self.config.video_height,
+            framerate: self.config.video_framerate,
+            cursor_visible: true,
+        };
+        let mut capture = Capture::new(capture_config)?;
+        let pw_stream = capture.start().await?;
+        info!(
+            "Screen capture started: node_id={}, fd={}",
+            pw_stream.node_id(),
+            pw_stream.fd()
+        );
+
+        let pipeline =
+            StreamPipeline::new_pipewire(stream_config, pw_stream.fd(), pw_stream.node_id())?;
         pipeline
             .set_output(destination_ip, destination_rtp_port)
             .await?;
         pipeline.start().await?;
         info!(
-            "Stream pipeline started to {}:{}",
+            "PipeWire stream pipeline started to {}:{}",
             destination_ip, destination_rtp_port
         );
 
-        let caps = gstreamer::Caps::builder("video/x-raw")
-            .field("format", "BGRA")
-            .field("width", self.config.video_width as i32)
-            .field("height", self.config.video_height as i32)
-            .field(
-                "framerate",
-                gstreamer::Fraction::new(self.config.video_framerate as i32, 1),
-            )
-            .build();
-        pipeline.set_caps(&caps).await?;
-
-        let test_pattern_config = TestPatternConfig {
-            width: self.config.video_width,
-            height: self.config.video_height,
-            framerate: self.config.video_framerate as f32,
-        };
-        let generator = TestPatternGenerator::new(test_pattern_config);
-        let mut frame_receiver = generator.start();
-
-        let pipeline_clone = pipeline.clone();
-        tokio::spawn(async move {
-            while let Some(frame) = frame_receiver.recv().await {
-                let gst_buffer = gstreamer::Buffer::from_slice(frame.data.clone());
-                if let Err(e) = pipeline_clone.push_video_buffer(&gst_buffer).await {
-                    tracing::error!("Failed to push frame: {}", e);
-                    break;
-                }
-            }
-            tracing::info!("Frame sender stopped");
-        });
-
+        self.capture = Some(capture);
         self.stream = Some(pipeline);
         *self.state.write() = DaemonState::Streaming;
         Ok(())

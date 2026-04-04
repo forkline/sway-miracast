@@ -1,8 +1,3 @@
-//! Miracast capture crate for Sway/wlroots screencast capture via xdg-desktop-portal-wlr and PipeWire.
-//!
-//! This module implements screen capture through the xdg-desktop-portal API which interfaces with
-//! xdg-desktop-portal-wlr to provide access to screen content via PipeWire.
-
 use std::os::unix::io::RawFd;
 
 use tracing::info;
@@ -121,10 +116,10 @@ impl Capture {
         info!("Starting capture with config: {:?}", self.config);
 
         let stream = self.start_capture().await?;
-        let session_handle = stream.session_handle().to_string(); // Keep a copy to store
+        let session_handle = stream.session_handle().to_string();
 
         self.stream = Some(stream);
-        self.session_handle = Some(session_handle); // Store session handle separately
+        self.session_handle = Some(session_handle);
         self.active = true;
         info!(
             "Capture started successfully with node ID: {}",
@@ -148,14 +143,14 @@ impl Capture {
 
     #[cfg(feature = "real_portal")]
     async fn start_real_portal_capture(&mut self) -> Result<PipeWireStream, CaptureError> {
-        // Implementation stays the same, no need to modify session_handle here
         use std::collections::HashMap;
+        use std::os::fd::AsRawFd;
+        use zvariant::Value;
 
         let conn = zbus::Connection::session().await.map_err(|e| {
             CaptureError::DBusError(format!("Failed to connect to session bus: {}", e))
         })?;
 
-        // Create proxy for the ScreenCast portal
         let screen_cast_proxy = zbus::Proxy::new(
             &conn,
             "org.freedesktop.portal.Desktop",
@@ -165,104 +160,147 @@ impl Capture {
         .await
         .map_err(|e| CaptureError::PortalError(e.to_string()))?;
 
-        // Step 1: Create session
-        let session_token = format!("swb_sess_{}", rand::random::<u32>());
-        let create_request_token = format!("swb_cre_req_{}", rand::random::<u32>());
+        let unique_name = conn.unique_name().unwrap();
+        let sender_token = unique_name
+            .as_str()
+            .trim_start_matches(':')
+            .replace('.', "_");
 
-        let mut create_session_options: HashMap<&str, zvariant::Value> = HashMap::new();
-        create_session_options.insert(
-            "handle_token",
-            zvariant::Value::from(create_request_token.as_str()),
-        );
-        create_session_options.insert(
-            "session_handle_token",
-            zvariant::Value::from(session_token.as_str()),
+        let token_counter = std::sync::atomic::AtomicU32::new(0);
+        let next_token = |prefix: &str| -> String {
+            let n = token_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            format!("swaybeam_{}_{}", prefix, n)
+        };
+
+        // Step 1: CreateSession
+        let session_token = next_token("sess");
+        let create_req_token = next_token("req");
+        let create_response_path = format!(
+            "/org/freedesktop/portal/desktop/request/{}/{}",
+            sender_token, create_req_token
         );
 
-        let create_response: zvariant::OwnedObjectPath = screen_cast_proxy
-            .call("CreateSession", &(create_session_options,))
+        let mut opts: HashMap<&str, Value<'_>> = HashMap::new();
+        opts.insert("handle_token", Value::from(create_req_token.as_str()));
+        opts.insert("session_handle_token", Value::from(session_token.as_str()));
+
+        let create_signal = subscribe_response(&conn, &create_response_path).await?;
+        let _create_handle: zvariant::OwnedObjectPath = screen_cast_proxy
+            .call("CreateSession", &(opts,))
             .await
-            .map_err(|e| CaptureError::PortalError(format!("CreateSession call failed: {}", e)))?;
+            .map_err(|e| CaptureError::PortalError(format!("CreateSession failed: {}", e)))?;
+        let create_results = create_signal.await_response().await?;
 
-        // For a complete implementation, we should wait for the response signal, but for now
-        // we'll handle the synchronous aspects only
-        let _request_proxy = zbus::Proxy::new(
-            &conn,
-            "org.freedesktop.portal.Desktop",
-            create_response.as_str(),
-            "org.freedesktop.portal.Request",
-        )
-        .await
-        .map_err(|e| CaptureError::PortalError(format!("Failed to create request proxy: {}", e)))?;
+        let session_handle_str = create_results
+            .get("session_handle")
+            .ok_or_else(|| {
+                CaptureError::PortalError("No session_handle in CreateSession response".into())
+            })?
+            .downcast_ref::<String>()
+            .map_err(|e| {
+                CaptureError::PortalError(format!("Failed to deserialize session_handle: {}", e))
+            })?
+            .clone();
 
-        // For demo purposes, generating a session ID
-        let session_id = format!("sess_{}_{}", session_token, rand::random::<u32>());
+        let session_handle: zvariant::ObjectPath<'_> =
+            session_handle_str.as_str().try_into().map_err(|e| {
+                CaptureError::PortalError(format!("Invalid session handle path: {}", e))
+            })?;
 
-        // Step 2: Select sources
-        let select_request_token = format!("swb_sel_{}", rand::random::<u32>());
-        let mut select_sources_options: HashMap<&str, zvariant::Value> = HashMap::new();
-        select_sources_options.insert(
-            "handle_token",
-            zvariant::Value::from(select_request_token.as_str()),
+        info!("Portal session created: {}", session_handle.as_str());
+
+        // Step 2: SelectSources
+        let sel_req_token = next_token("req");
+        let sel_response_path = format!(
+            "/org/freedesktop/portal/desktop/request/{}/{}",
+            sender_token, sel_req_token
         );
-        select_sources_options.insert("types", zvariant::Value::from(1u32)); // Desktop capture only
-        select_sources_options.insert("multiple", zvariant::Value::from(false)); // Single source
-        select_sources_options.insert(
+        let mut sel_opts: HashMap<&str, Value<'_>> = HashMap::new();
+        sel_opts.insert("handle_token", Value::from(sel_req_token.as_str()));
+        sel_opts.insert("types", Value::from(1u32));
+        sel_opts.insert("multiple", Value::from(false));
+        sel_opts.insert(
             "cursor_mode",
-            zvariant::Value::from(if self.config.cursor_visible {
+            Value::from(if self.config.cursor_visible {
                 2u32
             } else {
                 1u32
-            }), // Embedded/Hidden
-        );
-        select_sources_options.insert("max_fps", zvariant::Value::from(self.config.framerate));
-
-        let _select_response: zvariant::OwnedObjectPath = screen_cast_proxy
-            .call(
-                "SelectSources",
-                &(session_id.as_str(), select_sources_options),
-            )
-            .await
-            .map_err(|e| CaptureError::PortalError(format!("SelectSources call failed: {}", e)))?;
-
-        let start_request_token = format!("swb_start_{}", rand::random::<u32>());
-        let mut start_options: HashMap<&str, zvariant::Value> = HashMap::new();
-        start_options.insert(
-            "handle_token",
-            zvariant::Value::from(start_request_token.as_str()),
+            }),
         );
 
-        // Step 3: Start session
-        let _start_response: zvariant::OwnedObjectPath = screen_cast_proxy
-            .call("Start", &(session_id.as_str(), "", start_options))
+        let sel_signal = subscribe_response(&conn, &sel_response_path).await?;
+        let _sel_handle: zvariant::OwnedObjectPath = screen_cast_proxy
+            .call("SelectSources", &(session_handle.clone(), sel_opts))
             .await
-            .map_err(|e| CaptureError::PortalError(format!("Start call failed: {}", e)))?;
+            .map_err(|e| CaptureError::PortalError(format!("SelectSources failed: {}", e)))?;
+        sel_signal.await_response().await?;
+        info!("Portal sources selected");
 
-        // Simulate the extraction of node id from session data (in real implementation would be extracted from signals)
-        let node_id = 1000 + rand::random::<u32>() % 1000;
+        // Step 3: Start
+        let start_req_token = next_token("req");
+        let start_response_path = format!(
+            "/org/freedesktop/portal/desktop/request/{}/{}",
+            sender_token, start_req_token
+        );
+        let mut start_opts: HashMap<&str, Value<'_>> = HashMap::new();
+        start_opts.insert("handle_token", Value::from(start_req_token.as_str()));
 
-        // Step 4: Open PipeWire remote for the session
-        let pw_options: std::collections::HashMap<&str, zvariant::Value> = HashMap::new();
-
-        let (pipewire_fd,): (RawFd,) = screen_cast_proxy
-            .call("OpenPipeWireRemote", &(session_id.as_str(), pw_options))
+        let start_signal = subscribe_response(&conn, &start_response_path).await?;
+        let _start_handle: zvariant::OwnedObjectPath = screen_cast_proxy
+            .call("Start", &(session_handle.clone(), "", start_opts))
             .await
-            .map_err(|e| {
-                CaptureError::PortalError(format!("OpenPipeWireRemote call failed: {}", e))
-            })?;
+            .map_err(|e| CaptureError::PortalError(format!("Start failed: {}", e)))?;
+        let start_results = start_signal.await_response().await?;
+        info!("Portal session started");
+
+        let streams_value = start_results
+            .get("streams")
+            .ok_or_else(|| CaptureError::PortalError("No streams in Start response".into()))?;
+
+        let streams: Vec<(u32, std::collections::HashMap<String, zvariant::OwnedValue>)> =
+            streams_value
+                .downcast_ref::<zvariant::Array>()
+                .map_err(|e| {
+                    CaptureError::PortalError(format!("Failed to deserialize streams array: {}", e))
+                })?
+                .try_into()
+                .map_err(|e: zvariant::Error| {
+                    CaptureError::PortalError(format!("Failed to parse streams entries: {}", e))
+                })?;
+
+        let (node_id, _props) = streams
+            .into_iter()
+            .next()
+            .ok_or_else(|| CaptureError::PortalError("Empty streams array".into()))?;
+
+        info!("Got PipeWire node_id: {}", node_id);
+
+        // Step 4: OpenPipeWireRemote
+        let pw_opts: HashMap<&str, Value<'_>> = HashMap::new();
+        let pw_fd: zvariant::OwnedFd = screen_cast_proxy
+            .call("OpenPipeWireRemote", &(session_handle, pw_opts))
+            .await
+            .map_err(|e| CaptureError::PortalError(format!("OpenPipeWireRemote failed: {}", e)))?;
+
+        let owned_fd = pw_fd.as_raw_fd();
+        let duped_fd = unsafe { libc::dup(owned_fd) };
+        if duped_fd < 0 {
+            return Err(CaptureError::PipeWireError(
+                "Failed to dup PipeWire fd".into(),
+            ));
+        }
 
         info!(
-            "Created PipeWire stream with node ID: {} and fd: {}",
-            node_id, pipewire_fd
+            "PipeWire stream ready: node_id={}, fd={}",
+            node_id, duped_fd
         );
 
-        // Store the session handle to use during stop
-        self.session_handle = Some(session_id.clone());
+        self.session_handle = Some(session_handle_str.clone());
 
         Ok(PipeWireStream {
-            fd: pipewire_fd,
+            fd: duped_fd,
             node_id,
-            session_handle: session_id,
+            session_handle: session_handle_str,
         })
     }
 
@@ -270,8 +308,8 @@ impl Capture {
     fn start_simulated_capture(&mut self) -> Result<PipeWireStream, CaptureError> {
         info!("Using simulated PipeWire capture");
         let session_id = format!("sim_session_{}", rand::random::<u32>());
-        let node_id = 2000 + rand::random::<u32>() % 1000; // Fixed for simulation
-        let fd = -1; // No real fd for simulation
+        let node_id = 2000 + rand::random::<u32>() % 1000;
+        let fd = -1;
 
         self.session_handle = Some(session_id.clone());
 
@@ -289,28 +327,22 @@ impl Capture {
 
         info!("Stopping capture...");
 
-        // Clean up PipeWire stream
         if let Some(stream) = self.stream.take() {
             drop(stream);
         }
 
-        // If we have portal integration, try to clean up properly
         #[cfg(feature = "real_portal")]
         if let Some(session_handle) = self.session_handle.take() {
             if let Ok(conn) = zbus::Connection::session().await {
-                let screen_cast_proxy = zbus::Proxy::new(
+                if let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.freedesktop.portal.Desktop",
-                    "/org/freedesktop/portal/desktop",
-                    "org.freedesktop.portal.ScreenCast",
+                    session_handle.as_str(),
+                    "org.freedesktop.portal.Session",
                 )
                 .await
-                .ok();
-
-                if let Some(proxy) = screen_cast_proxy {
-                    let _ = proxy
-                        .call_method("Close", &(session_handle.as_str(),))
-                        .await;
+                {
+                    let _ = proxy.call_method("Close", &()).await;
                 }
             }
         }
@@ -331,6 +363,73 @@ impl Capture {
     pub fn stream(&self) -> Option<&PipeWireStream> {
         self.stream.as_ref()
     }
+}
+
+#[cfg(all(target_os = "linux", feature = "real_portal"))]
+struct PortalResponseWaiter {
+    signal_stream: zbus::proxy::SignalStream<'static>,
+}
+
+#[cfg(all(target_os = "linux", feature = "real_portal"))]
+impl PortalResponseWaiter {
+    async fn await_response(
+        mut self,
+    ) -> Result<std::collections::HashMap<String, zvariant::OwnedValue>, CaptureError> {
+        use futures_util::StreamExt;
+
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.signal_stream.next(),
+        )
+        .await
+        .map_err(|_| CaptureError::PortalError("Timeout waiting for portal response".into()))?
+        .ok_or_else(|| CaptureError::PortalError("No Response signal received".into()))?;
+
+        let (response_code, results): (
+            u32,
+            std::collections::HashMap<String, zvariant::OwnedValue>,
+        ) = msg.body().deserialize().map_err(|e| {
+            CaptureError::PortalError(format!("Failed to parse Response signal: {}", e))
+        })?;
+
+        match response_code {
+            0 => Ok(results),
+            1 => Err(CaptureError::PortalCancelled),
+            2 => Err(CaptureError::PortalError(
+                "Portal request was cancelled by user".into(),
+            )),
+            code => Err(CaptureError::PortalError(format!(
+                "Portal returned error code: {}",
+                code
+            ))),
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "real_portal"))]
+async fn subscribe_response(
+    conn: &zbus::Connection,
+    response_path: &str,
+) -> Result<PortalResponseWaiter, CaptureError> {
+    let proxy = zbus::Proxy::new(
+        conn,
+        "org.freedesktop.portal.Desktop",
+        response_path,
+        "org.freedesktop.portal.Request",
+    )
+    .await
+    .map_err(|e| {
+        CaptureError::PortalError(format!(
+            "Failed to create Request proxy for {}: {}",
+            response_path, e
+        ))
+    })?;
+
+    let signal_stream = proxy.receive_signal("Response").await.map_err(|e| {
+        CaptureError::PortalError(format!("Failed to subscribe to Response signal: {}", e))
+    })?;
+
+    Ok(PortalResponseWaiter { signal_stream })
 }
 
 #[cfg(not(target_os = "linux"))]
