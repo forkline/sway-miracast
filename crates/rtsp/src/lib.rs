@@ -1155,6 +1155,98 @@ impl RtspClient {
         }
     }
 
+    pub async fn run_keepalive(mut self) {
+        tracing::info!("RTSP keepalive loop started — keeping TCP connection alive for streaming");
+
+        let keepalive_interval = Duration::from_secs(25);
+
+        loop {
+            let stream = match self.stream.as_mut() {
+                Some(s) => s,
+                None => {
+                    tracing::warn!("RTSP keepalive: no stream");
+                    break;
+                }
+            };
+
+            match tokio::time::timeout(keepalive_interval, Self::read_message(stream)).await {
+                Ok(Ok(message)) => {
+                    if message.starts_with("RTSP/1.0") {
+                        tracing::debug!("RTSP keepalive: ignoring response:\n{}", message);
+                        continue;
+                    }
+
+                    tracing::debug!("RTSP keepalive: handling peer request:\n{}", message);
+
+                    let is_teardown = message
+                        .lines()
+                        .next()
+                        .is_some_and(|line| line.starts_with("TEARDOWN"));
+
+                    match self.build_peer_request_response(&message) {
+                        Ok(outcome) => {
+                            if let Some(ref mut stream) = self.stream {
+                                if let Err(e) = stream.write_all(outcome.response.as_bytes()).await
+                                {
+                                    tracing::warn!(
+                                        "RTSP keepalive: failed to send response: {}",
+                                        e
+                                    );
+                                    break;
+                                }
+                            }
+                            if is_teardown {
+                                tracing::info!("RTSP keepalive: TEARDOWN received, ending session");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("RTSP keepalive: failed to handle request: {}", e);
+                            break;
+                        }
+                    }
+                }
+                Ok(Err(RtspError::Io(e))) => {
+                    tracing::info!("RTSP keepalive: connection closed ({})", e);
+                    break;
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("RTSP keepalive: read error: {}", e);
+                    break;
+                }
+                Err(_) => {
+                    tracing::debug!("RTSP keepalive: no incoming request for 25s, sending GET_PARAMETER keepalive");
+                    if let Err(e) = self.send_keepalive_get_parameter().await {
+                        tracing::warn!("RTSP keepalive: failed to send keepalive: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+        tracing::info!("RTSP keepalive loop ended — TCP connection will close");
+    }
+
+    async fn send_keepalive_get_parameter(&mut self) -> Result<(), RtspError> {
+        self.cseq += 1;
+        let request = if let Some(ref session_id) = self.session_id {
+            format!(
+                "GET_PARAMETER {} RTSP/1.0\r\nCSeq: {}\r\nSession: {}\r\n\r\n",
+                self.control_uri(),
+                self.cseq,
+                session_id
+            )
+        } else {
+            format!(
+                "GET_PARAMETER {} RTSP/1.0\r\nCSeq: {}\r\n\r\n",
+                self.control_uri(),
+                self.cseq
+            )
+        };
+        self.send_request(request).await?;
+        let _ = self.read_response().await?;
+        Ok(())
+    }
+
     pub fn adopt_peer_session(&mut self) -> &str {
         if self.session_id.is_none() {
             self.session_id = Some(self.peer_session.session_id.clone());

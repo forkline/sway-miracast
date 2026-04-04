@@ -468,7 +468,7 @@ impl Daemon {
             }
         }
 
-        let mut rtsp_client = rtsp_client.ok_or_else(|| {
+        let rtsp_client = rtsp_client.ok_or_else(|| {
             anyhow::anyhow!(
                 "RTSP client connection failed to {}:{} - {:?}",
                 go_ip,
@@ -478,7 +478,7 @@ impl Daemon {
         })?;
 
         info!("Connected to TV's RTSP server!");
-        self.negotiate_with_rtsp_client(&mut rtsp_client).await?;
+        self.negotiate_with_rtsp_client(rtsp_client).await?;
 
         Ok(())
     }
@@ -541,6 +541,11 @@ impl Daemon {
         )
         .await?;
         info!("Stream pipeline configured in reverse RTSP mode");
+
+        tokio::spawn(async move {
+            rtsp_client.run_keepalive().await;
+        });
+        info!("RTSP keepalive task spawned — TCP connection will stay alive during streaming");
 
         Ok(())
     }
@@ -1340,11 +1345,10 @@ impl Daemon {
         }
     }
 
-    async fn negotiate_with_rtsp_client(
-        &mut self,
-        rtsp_client: &mut RtspClient,
-    ) -> anyhow::Result<()> {
-        let sink_caps = self.exchange_rtsp_capabilities(rtsp_client).await?;
+    async fn negotiate_with_rtsp_client(&mut self, rtsp_client: RtspClient) -> anyhow::Result<()> {
+        let mut rtsp_client = rtsp_client;
+
+        let sink_caps = self.exchange_rtsp_capabilities(&mut rtsp_client).await?;
 
         let sink_rtp_port = sink_caps
             .get("wfd_client_rtp_ports")
@@ -1394,6 +1398,11 @@ impl Daemon {
         .await?;
         info!("Stream pipeline configured in RTSP client mode");
 
+        tokio::spawn(async move {
+            rtsp_client.run_keepalive().await;
+        });
+        info!("RTSP keepalive task spawned — TCP connection will stay alive during streaming");
+
         Ok(())
     }
 
@@ -1431,13 +1440,7 @@ impl Daemon {
             "wfd_standby_resume_capability".to_string(),
             "none".to_string(),
         );
-        source_caps.insert(
-            "wfd_content_protection".to_string(),
-            sink_caps
-                .get("wfd_content_protection")
-                .cloned()
-                .unwrap_or_else(|| "none".to_string()),
-        );
+        source_caps.insert("wfd_content_protection".to_string(), "none".to_string());
         source_caps.insert("wfd_coupled_sink".to_string(), "none".to_string());
 
         rtsp_client.send_set_parameter(&source_caps).await?;
@@ -1449,22 +1452,9 @@ impl Daemon {
     /// Determine video codec from sink capabilities
     fn get_negotiated_codec(
         &self,
-        sink_caps: &std::collections::HashMap<String, String>,
+        _sink_caps: &std::collections::HashMap<String, String>,
     ) -> VideoCodec {
-        if let Some(video_formats) = sink_caps.get("wfd_video_formats") {
-            // Try to detect from video formats
-            if video_formats.contains("000000000000001F") {
-                // Supports H.265 (HEVC)
-                VideoCodec::H265
-            } else if video_formats.contains("0000000000000007") {
-                // Supports H.264
-                VideoCodec::H264
-            } else {
-                VideoCodec::H264 // Default fallback
-            }
-        } else {
-            VideoCodec::H264 // Default fallback
-        }
+        VideoCodec::H264
     }
 
     fn map_negotiated_codec(codec: NegotiatedCodec) -> VideoCodec {
