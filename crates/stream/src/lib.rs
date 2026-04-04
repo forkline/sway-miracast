@@ -52,8 +52,8 @@ impl VideoCodec {
 
     pub fn rtp_payloader(&self) -> &'static str {
         match self {
-            VideoCodec::H264 => "rtph264pay",
-            VideoCodec::H265 => "rtph265pay",
+            VideoCodec::H264 => "rtpmp2tpay",
+            VideoCodec::H265 => "rtpmp2tpay",
             VideoCodec::AV1 => "rtpav1pay",
         }
     }
@@ -245,23 +245,50 @@ impl StreamPipelineInner {
 
         let videoconvert = gst::ElementFactory::make("videoconvert").build()?;
 
-        // Create encoder based on codec
         let encoder = gst::ElementFactory::make(config.video_codec.gstreamer_encoder()).build()?;
 
-        // Create parser based on codec
         let parser = gst::ElementFactory::make(config.video_codec.parser()).build()?;
-        // Create RTP payloader based on codec
-        let rtp_pay = gst::ElementFactory::make(config.video_codec.rtp_payloader()).build()?;
+
+        let codec_caps = gst::Caps::builder("video/x-h264")
+            .field("stream-format", "byte-stream")
+            .field("profile", "constrained-baseline")
+            .build();
+        let codecfilter = gst::ElementFactory::make("capsfilter")
+            .name("codecfilter")
+            .build()?;
+        codecfilter.set_property("caps", &codec_caps);
+
+        let queue_mux = gst::ElementFactory::make("queue")
+            .name("queue-mux-video")
+            .build()?;
+        queue_mux.set_property("max-size-buffers", 1000u32);
+        queue_mux.set_property("max-size-time", 500_000_000u64);
+
+        let mpegtsmux = gst::ElementFactory::make("mpegtsmux")
+            .name("mpegtsmux")
+            .build()?;
+        mpegtsmux.set_property("alignment", 7i32);
+
+        let queue_pay = gst::ElementFactory::make("queue")
+            .name("queue-pre-payloader")
+            .build()?;
+        queue_pay.set_property("max-size-buffers", 1u32);
+
+        let rtp_pay = gst::ElementFactory::make(config.video_codec.rtp_payloader())
+            .name("pay0")
+            .build()?;
+        rtp_pay.set_property("ssrc", 1u32);
+        rtp_pay.set_property("perfect-rtptime", false);
+        rtp_pay.set_property("timestamp-offset", 0u32);
+        rtp_pay.set_property("seqnum-offset", 0i32);
 
         let udpsink = gst::ElementFactory::make("udpsink")
             .name("udpsink")
             .build()?;
 
-        // Set appsrc properties for live streaming
         appsrc.set_property("is-live", true);
         appsrc.set_property("format", gst::Format::Time);
 
-        // Helper function to set properties safely without error propagation
         fn set_prop_safe(element: &gst::Element, name: &str, value: &str) {
             element.set_property_from_str(name, value);
         }
@@ -270,19 +297,16 @@ impl StreamPipelineInner {
             element.set_property(name, value);
         }
 
-        // Configure encoder for low latency - different options per codec
         match config.video_codec {
             VideoCodec::H264 => {
                 set_prop_safe(&encoder, "tune", "zerolatency");
                 set_prop_safe(&encoder, "speed-preset", "veryfast");
             }
             VideoCodec::H265 => {
-                // Try common property name for x265enc first
                 set_prop_safe(&encoder, "tune", "zerolatency");
                 set_prop_safe(&encoder, "speed-preset", "fast");
             }
             VideoCodec::AV1 => {
-                // SVT-AV1 options for low latency
                 set_prop_int_safe(&encoder, "preset", 8);
                 set_prop_int_safe(
                     &encoder,
@@ -292,30 +316,31 @@ impl StreamPipelineInner {
             }
         }
 
-        // Set common bitrate regardless of codec type
         if !matches!(config.video_codec, VideoCodec::AV1) {
-            // For AV1, bitrate is set differently as shown above
             encoder.set_property_from_str("bitrate", &(config.video_bitrate / 1000).to_string());
         }
         encoder.set_property_from_str("key-int-max", &(config.video_framerate * 2).to_string());
 
-        // Configure udpsink (will be updated via set_output)
-        udpsink.set_property_from_str("host", "127.0.0.1"); // placeholder
-        udpsink.set_property_from_str("port", "5004"); // placeholder
+        parser.set_property("config-interval", -1i32);
+
+        udpsink.set_property_from_str("host", "127.0.0.1");
+        udpsink.set_property_from_str("port", "5004");
         udpsink.set_property("sync", false);
         udpsink.set_property("async", false);
 
-        // Add elements to pipeline
         pipeline.add_many([
             appsrc.upcast_ref::<gst::Element>(),
             &videoconvert,
             &encoder,
             &parser,
+            &codecfilter,
+            &queue_mux,
+            &mpegtsmux,
+            &queue_pay,
             &rtp_pay,
             &udpsink,
         ])?;
 
-        // Link elements
         if appsrc.link(&videoconvert).is_err() {
             return Err(StreamError::PipelineConstruction(
                 "Failed to link appsrc to videoconvert".to_string(),
@@ -331,14 +356,44 @@ impl StreamPipelineInner {
                 "Failed to link encoder to parser".to_string(),
             ));
         }
-        if parser.link(&rtp_pay).is_err() {
+        if parser.link(&codecfilter).is_err() {
             return Err(StreamError::PipelineConstruction(
-                "Failed to link parser to rtp payloader".to_string(),
+                "Failed to link parser to codecfilter".to_string(),
+            ));
+        }
+        if codecfilter.link(&queue_mux).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link codecfilter to queue_mux".to_string(),
+            ));
+        }
+
+        let queue_mux_src = queue_mux.static_pad("src").ok_or_else(|| {
+            StreamError::PipelineConstruction("Failed to get queue_mux src pad".to_string())
+        })?;
+        let mpegtsmux_sink = mpegtsmux.request_pad_simple("sink_4113").ok_or_else(|| {
+            StreamError::PipelineConstruction(
+                "Failed to request sink_4113 pad from mpegtsmux".to_string(),
+            )
+        })?;
+        if queue_mux_src.link(&mpegtsmux_sink).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link queue_mux to mpegtsmux".to_string(),
+            ));
+        }
+
+        if mpegtsmux.link(&queue_pay).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link mpegtsmux to queue_pay".to_string(),
+            ));
+        }
+        if queue_pay.link(&rtp_pay).is_err() {
+            return Err(StreamError::PipelineConstruction(
+                "Failed to link queue_pay to rtp_pay".to_string(),
             ));
         }
         if rtp_pay.link(&udpsink).is_err() {
             return Err(StreamError::PipelineConstruction(
-                "Failed to link rtp payloader to udpsink".to_string(),
+                "Failed to link rtp_pay to udpsink".to_string(),
             ));
         }
 
