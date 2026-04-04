@@ -1,6 +1,8 @@
 use std::fmt;
 use swaybeam_capture::PipeWireStream;
 mod test_pattern;
+use gst_base::prelude::*;
+use gstreamer_app::gst_base;
 pub use test_pattern::{Frame, TestPatternConfig, TestPatternGenerator};
 
 /// Possible video codecs supported by the stream
@@ -474,81 +476,144 @@ impl StreamPipelineInner {
             node_id
         );
 
-        std::env::set_var("PIPEWIRE_NODE", node_id.to_string());
-        tracing::info!("Set PIPEWIRE_NODE={}", node_id);
+        // Validate fd is still valid
+        let fd_valid = unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1;
+        tracing::info!("FD {} validity check: {}", fd, fd_valid);
+        if !fd_valid {
+            return Err(StreamError::PipelineConstruction(format!(
+                "FD {} is invalid or closed before pipeline creation",
+                fd
+            )));
+        }
 
-        let encoder_name = config.video_codec.gstreamer_encoder();
-        let parser_name = config.video_codec.parser();
-        let rtp_payloader = config.video_codec.rtp_payloader();
+        let pipeline = gst::Pipeline::builder().name("miracast-stream").build();
+
+        let pipewiresrc: gst::Element = gst::ElementFactory::make("pipewiresrc")
+            .name("src")
+            .build()?;
+
+        pipewiresrc.set_property("fd", fd);
+        pipewiresrc.set_property("path", node_id.to_string());
+        pipewiresrc.set_property("do-timestamp", true);
+
+        let pipewiresrc_base: &gstreamer_app::gst_base::BaseSrc =
+            pipewiresrc.dynamic_cast_ref().ok_or_else(|| {
+                StreamError::PipelineConstruction("Failed to cast pipewiresrc to BaseSrc".into())
+            })?;
+        pipewiresrc_base.set_live(true);
+
+        tracing::info!(
+            "pipewiresrc configured: fd={}, path={}, do-timestamp=true, live=true",
+            fd,
+            node_id
+        );
+
+        let videoconvert = gst::ElementFactory::make("videoconvert").build()?;
+        let encoder = gst::ElementFactory::make(config.video_codec.gstreamer_encoder())
+            .name("enc")
+            .build()?;
+        let parser = gst::ElementFactory::make(config.video_codec.parser())
+            .name("parser")
+            .build()?;
+        let queue_mux = gst::ElementFactory::make("queue")
+            .name("queue-mux-video")
+            .build()?;
+        let mpegtsmux = gst::ElementFactory::make("mpegtsmux").build()?;
+        let queue_pay = gst::ElementFactory::make("queue")
+            .name("queue-pre-payloader")
+            .build()?;
+        let rtp_pay = gst::ElementFactory::make(config.video_codec.rtp_payloader())
+            .name("pay0")
+            .build()?;
+        let udpsink = gst::ElementFactory::make("udpsink")
+            .name("udpsink")
+            .build()?;
 
         let key_int_max = config.video_framerate * 2;
-
-        let encoder_opts = match config.video_codec {
-            VideoCodec::H264 => format!(
-                "tune=zerolatency speed-preset=veryfast bitrate={} key-int-max={}",
-                config.video_bitrate / 1000,
-                key_int_max
-            ),
-            VideoCodec::H265 => format!(
-                "tune=zerolatency speed-preset=fast bitrate={} key-int-max={}",
-                config.video_bitrate / 1000,
-                key_int_max
-            ),
-            VideoCodec::AV1 => format!(
-                "preset=8 target-bitrate={} key-int-max={}",
-                config.video_bitrate / 1000,
-                key_int_max
-            ),
-        };
-
-        let pipeline_str = format!(
-            "pipewiresrc name=src fd={fd} keepalive-time=1000 always-copy=true do-timestamp=true \
-             ! videoconvert \
-             ! {encoder_name} name=enc {encoder_opts} \
-             ! {parser_name} config-interval=-1 \
-             ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline \
-             ! queue name=queue-mux-video max-size-buffers=1000 max-size-time=500000000 \
-             ! mpegtsmux alignment=7 \
-             ! queue name=queue-pre-payloader max-size-buffers=1 \
-             ! {rtp_payloader} name=pay0 ssrc=1 perfect-rtptime=false timestamp-offset=0 seqnum-offset=0 \
-             ! udpsink name=udpsink host=127.0.0.1 port=5004 sync=false async=false"
-        );
-
-        tracing::info!("Pipeline string: {}", pipeline_str);
-
-        tracing::info!("Checking PipeWire nodes at pipeline creation time...");
-        let check_output = std::process::Command::new("pw-dump")
-            .arg("-n")
-            .output()
-            .expect("Failed to run pw-dump");
-        tracing::info!(
-            "pw-dump output available: {} bytes",
-            check_output.stdout.len()
-        );
-
-        let pipeline = gst::parse::launch(&pipeline_str)?;
-        let pipeline: gst::Pipeline = pipeline
-            .dynamic_cast()
-            .map_err(|_| StreamError::PipelineConstruction("Failed to cast to Pipeline".into()))?;
-
-        let pipewiresrc = pipeline.by_name("src").ok_or_else(|| {
-            StreamError::PipelineConstruction("Failed to find pipewiresrc".into())
-        })?;
-        {
-            let src_pad = pipewiresrc.static_pad("src").ok_or_else(|| {
-                StreamError::PipelineConstruction("Failed to get pipewiresrc src pad".into())
-            })?;
-            src_pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
-                if let Some(gst::PadProbeData::Event(ref ev)) = info.data {
-                    if ev.type_() == gst::EventType::Caps {
-                        if let Some(s) = ev.structure() {
-                            tracing::info!("pipewiresrc negotiated caps: {}", s);
-                        }
-                    }
-                }
-                gst::PadProbeReturn::Ok
-            });
+        match config.video_codec {
+            VideoCodec::H264 => {
+                encoder.set_property_from_str("tune", "zerolatency");
+                encoder.set_property_from_str("speed-preset", "veryfast");
+                encoder.set_property("bitrate", config.video_bitrate / 1000);
+                encoder.set_property("key-int-max", key_int_max);
+            }
+            VideoCodec::H265 => {
+                encoder.set_property_from_str("tune", "zerolatency");
+                encoder.set_property_from_str("speed-preset", "fast");
+                encoder.set_property("bitrate", config.video_bitrate / 1000);
+                encoder.set_property("key-int-max", key_int_max);
+            }
+            VideoCodec::AV1 => {
+                encoder.set_property("preset", 8i32);
+                encoder.set_property("target-bitrate", config.video_bitrate / 1000);
+            }
         }
+
+        parser.set_property("config-interval", -1i32);
+
+        queue_mux.set_property("max-size-buffers", 1000u32);
+        queue_mux.set_property("max-size-time", 500_000_000u64);
+        queue_pay.set_property("max-size-buffers", 1u32);
+
+        mpegtsmux.set_property("alignment", 7i32);
+
+        rtp_pay.set_property("ssrc", 1u32);
+        rtp_pay.set_property("perfect-rtptime", false);
+        rtp_pay.set_property("timestamp-offset", 0u32);
+        rtp_pay.set_property("seqnum-offset", 0i32);
+
+        udpsink.set_property("host", "127.0.0.1");
+        udpsink.set_property("port", 5004i32);
+        udpsink.set_property("sync", false);
+        udpsink.set_property("async", false);
+
+        let capsfilter = gst::ElementFactory::make("capsfilter")
+            .name("caps-filter")
+            .build()?;
+        let caps = gst::Caps::builder("video/x-h264")
+            .field("stream-format", "byte-stream")
+            .field("profile", "constrained-baseline")
+            .build();
+        capsfilter.set_property("caps", &caps);
+
+        pipeline.add_many([
+            &pipewiresrc,
+            &videoconvert,
+            &encoder,
+            &parser,
+            &capsfilter,
+            &queue_mux,
+            &mpegtsmux,
+            &queue_pay,
+            &rtp_pay,
+            &udpsink,
+        ])?;
+
+        gst::Element::link_many([
+            &pipewiresrc,
+            &videoconvert,
+            &encoder,
+            &parser,
+            &capsfilter,
+            &queue_mux,
+        ])?;
+
+        let queue_mux_src = queue_mux.static_pad("src").ok_or_else(|| {
+            StreamError::PipelineConstruction("Failed to get queue_mux src pad".into())
+        })?;
+        let mpegtsmux_sink = mpegtsmux.request_pad_simple("sink_4113").ok_or_else(|| {
+            StreamError::PipelineConstruction(
+                "Failed to request sink_4113 pad from mpegtsmux".into(),
+            )
+        })?;
+        queue_mux_src.link(&mpegtsmux_sink).map_err(|e| {
+            StreamError::PipelineConstruction(format!(
+                "Failed to link queue_mux to mpegtsmux: {:?}",
+                e
+            ))
+        })?;
+
+        gst::Element::link_many([&mpegtsmux, &queue_pay, &rtp_pay, &udpsink])?;
 
         let bus_watch_guard = {
             let bus = pipeline

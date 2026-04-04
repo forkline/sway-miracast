@@ -14,3 +14,4 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 swaybeam-capture = { path = "../capture" }
+libc = "0.2"
