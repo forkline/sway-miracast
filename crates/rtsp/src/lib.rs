@@ -124,6 +124,7 @@ impl WfdCapabilities {
             "wfd_audio_codec" => self.audio_codecs = Some(value.to_string()),
             "wfd_client_rtp_port" => self.client_rtp_ports = Some(value.to_string()),
             "wfd_uibc_capabilit" => self.uibc_capability = Some(value.to_string()),
+            "wfd_idr_request" => {}
             _ => return Err(RtspError::InvalidParameter(param_name.to_string())),
         }
         Ok(())
@@ -886,18 +887,19 @@ pub struct SetupResult {
 /// Implements the client side of the RTSP/WFD protocol to connect to a Miracast sink
 /// that is serving RTSP requests when acting as the Group Owner in Wi-Fi Direct.
 /// This is necessary when connecting to certain TV models like LG that act as GO.
-#[derive(Debug)]
 pub struct RtspClient {
     server_addr: String,
     session_id: Option<String>,
     stream: Option<TcpStream>,
     cseq: u32,
     peer_session: RtspSession,
+    idr_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 struct PeerRequestOutcome {
     response: String,
     play_info: Option<PeerPlayInfo>,
+    idr_requested: bool,
 }
 
 impl RtspClient {
@@ -915,7 +917,12 @@ impl RtspClient {
             stream: Some(stream),
             cseq: 0,
             peer_session,
+            idr_tx: None,
         })
+    }
+
+    pub fn set_idr_channel(&mut self, tx: tokio::sync::mpsc::UnboundedSender<()>) {
+        self.idr_tx = Some(tx);
     }
 
     /// Connect to a Miracast sink's RTSP server
@@ -1051,6 +1058,7 @@ impl RtspClient {
                 Ok(PeerRequestOutcome {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
+                    idr_requested: false,
                 })
             }
             RtspMessage::GetParameter { cseq, params } => {
@@ -1059,13 +1067,16 @@ impl RtspClient {
                 Ok(PeerRequestOutcome {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
+                    idr_requested: false,
                 })
             }
             RtspMessage::SetParameter { cseq, params } => {
+                let has_idr = params.contains_key("wfd_idr_request");
                 let response = self.peer_session.process_set_parameter(&params)?;
                 Ok(PeerRequestOutcome {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
+                    idr_requested: has_idr,
                 })
             }
             RtspMessage::Setup {
@@ -1077,6 +1088,7 @@ impl RtspClient {
                 Ok(PeerRequestOutcome {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
+                    idr_requested: false,
                 })
             }
             RtspMessage::Play { cseq, session: _ } => {
@@ -1093,6 +1105,7 @@ impl RtspClient {
                             .unwrap_or(5004),
                         session_id: Some(self.peer_session.session_id.clone()),
                     }),
+                    idr_requested: false,
                 })
             }
             RtspMessage::Teardown { cseq, session: _ } => {
@@ -1100,6 +1113,7 @@ impl RtspClient {
                 Ok(PeerRequestOutcome {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
+                    idr_requested: false,
                 })
             }
         }
@@ -1149,6 +1163,12 @@ impl RtspClient {
                 .await
                 .map_err(RtspError::Io)?;
 
+            if outcome.idr_requested {
+                if let Some(ref tx) = self.idr_tx {
+                    let _ = tx.send(());
+                }
+            }
+
             if let Some(play_info) = outcome.play_info {
                 return Ok(play_info);
             }
@@ -1185,6 +1205,11 @@ impl RtspClient {
 
                     match self.build_peer_request_response(&message) {
                         Ok(outcome) => {
+                            if outcome.idr_requested {
+                                if let Some(ref tx) = self.idr_tx {
+                                    let _ = tx.send(());
+                                }
+                            }
                             if let Some(ref mut stream) = self.stream {
                                 if let Err(e) = stream.write_all(outcome.response.as_bytes()).await
                                 {

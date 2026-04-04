@@ -70,6 +70,7 @@ impl PipeWireStream {
 
 impl Drop for PipeWireStream {
     fn drop(&mut self) {
+        tracing::warn!("PipeWireStream::drop() - closing fd={}", self.fd);
         if self.fd >= 0 {
             unsafe {
                 libc::close(self.fd);
@@ -82,7 +83,6 @@ pub struct Capture {
     config: CaptureConfig,
     active: bool,
     session_handle: Option<String>,
-    stream: Option<PipeWireStream>,
 }
 
 #[cfg(target_os = "linux")]
@@ -104,11 +104,10 @@ impl Capture {
             config,
             active: false,
             session_handle: None,
-            stream: None,
         })
     }
 
-    pub async fn start(&mut self) -> Result<&PipeWireStream, CaptureError> {
+    pub async fn start(&mut self) -> Result<PipeWireStream, CaptureError> {
         if self.active {
             return Err(CaptureError::StartFailed("Capture already active".into()));
         }
@@ -116,17 +115,14 @@ impl Capture {
         info!("Starting capture with config: {:?}", self.config);
 
         let stream = self.start_capture().await?;
-        let session_handle = stream.session_handle().to_string();
-
-        self.stream = Some(stream);
-        self.session_handle = Some(session_handle);
+        self.session_handle = Some(stream.session_handle().to_string());
         self.active = true;
         info!(
             "Capture started successfully with node ID: {}",
-            self.stream.as_ref().unwrap().node_id()
+            stream.node_id()
         );
 
-        Ok(self.stream.as_ref().unwrap())
+        Ok(stream)
     }
 
     async fn start_capture(&mut self) -> Result<PipeWireStream, CaptureError> {
@@ -327,10 +323,6 @@ impl Capture {
 
         info!("Stopping capture...");
 
-        if let Some(stream) = self.stream.take() {
-            drop(stream);
-        }
-
         #[cfg(feature = "real_portal")]
         if let Some(session_handle) = self.session_handle.take() {
             if let Ok(conn) = zbus::Connection::session().await {
@@ -358,10 +350,6 @@ impl Capture {
 
     pub fn is_active(&self) -> bool {
         self.active
-    }
-
-    pub fn stream(&self) -> Option<&PipeWireStream> {
-        self.stream.as_ref()
     }
 }
 
@@ -438,7 +426,7 @@ impl Capture {
         Err(CaptureError::PlatformNotSupported)
     }
 
-    pub async fn start(&mut self) -> Result<&PipeWireStream, CaptureError> {
+    pub async fn start(&mut self) -> Result<PipeWireStream, CaptureError> {
         Err(CaptureError::PlatformNotSupported)
     }
 

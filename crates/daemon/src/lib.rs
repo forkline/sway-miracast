@@ -5,13 +5,13 @@ use std::time::Duration;
 use aes::Aes128;
 use ctr::cipher::{KeyIvInit, StreamCipher};
 use hmac::{Hmac, Mac};
-use parking_lot::RwLock;
+use parking_lot::RwLock as PlRwLock;
 use rand::{rngs::OsRng, RngCore};
 use rsa::{BigUint, Oaep, RsaPublicKey};
 use sha1::Sha1;
 use sha2::Sha256;
 use tokio::net::{TcpSocket, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info};
 
 use swaybeam_capture::{Capture, CaptureConfig};
@@ -40,7 +40,8 @@ pub struct DaemonConfig {
     pub discovery_timeout: Duration,
     pub interface: String,
     pub preferred_sink: Option<String>,
-    pub force_client_mode: bool, // Whether to force RTSP client mode instead of server mode
+    pub force_client_mode: bool,
+    pub extend_mode: bool,
 }
 
 impl Default for DaemonConfig {
@@ -53,20 +54,23 @@ impl Default for DaemonConfig {
             discovery_timeout: Duration::from_secs(10),
             interface: "wlan0".to_string(),
             preferred_sink: None,
-            force_client_mode: false, // Default is traditional server mode
+            force_client_mode: false,
+            extend_mode: false,
         }
     }
 }
 
 pub struct Daemon {
-    state: Arc<RwLock<DaemonState>>,
+    state: Arc<PlRwLock<DaemonState>>,
     config: DaemonConfig,
     #[allow(dead_code)]
     capture: Option<Capture>,
-    stream: Option<StreamPipeline>,
+    stream: Arc<RwLock<Option<StreamPipeline>>>,
     hdcp_stream: Option<TcpStream>,
     connection: Option<P2pConnection>,
     rtsp_server: Option<RtspServer>,
+    virtual_output_name: Option<String>,
+    original_portal_config: Option<String>,
     event_tx: mpsc::UnboundedSender<DaemonEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<DaemonEvent>>,
 }
@@ -122,13 +126,15 @@ impl Daemon {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
         Daemon {
-            state: Arc::new(RwLock::new(DaemonState::Idle)),
+            state: Arc::new(PlRwLock::new(DaemonState::Idle)),
             config,
             capture: None,
-            stream: None,
+            stream: Arc::new(RwLock::new(None)),
             hdcp_stream: None,
             connection: None,
             rtsp_server: None,
+            virtual_output_name: None,
+            original_portal_config: None,
             event_tx,
             event_rx: Some(event_rx),
         }
@@ -163,11 +169,23 @@ impl Daemon {
         *self.state.write() = DaemonState::Connecting;
         self.connect(sink).await?;
 
+        if self.config.extend_mode {
+            let output_name = self.setup_virtual_output()?;
+            info!(
+                "Virtual output '{}' configured for 4K extend mode",
+                output_name
+            );
+            self.config.video_width = 3840;
+            self.config.video_height = 2160;
+            self.config.video_bitrate = 20_000_000;
+            self.config.video_framerate = 30;
+        }
+
         *self.state.write() = DaemonState::Negotiating;
         self.negotiate().await?;
 
         *self.state.write() = DaemonState::Streaming;
-        if self.stream.is_none() {
+        if self.stream.read().await.is_none() {
             self.start_stream().await?;
         }
 
@@ -176,6 +194,7 @@ impl Daemon {
 
         self.stop_stream().await.ok();
         self.disconnect().await.ok();
+        self.cleanup_virtual_output();
 
         info!("Daemon stopped");
         *self.state.write() = DaemonState::Idle;
@@ -265,7 +284,7 @@ impl Daemon {
     }
 
     pub async fn start_stream(&mut self) -> anyhow::Result<()> {
-        if self.stream.is_some() {
+        if self.stream.read().await.is_some() {
             return Ok(());
         }
 
@@ -294,7 +313,7 @@ impl Daemon {
         }
 
         pipeline.start().await?;
-        self.stream = Some(pipeline);
+        *self.stream.write().await = Some(pipeline);
         info!("Stream pipeline started");
         self.event_tx.send(DaemonEvent::StreamingStarted).ok();
 
@@ -302,7 +321,7 @@ impl Daemon {
     }
 
     pub async fn stop_stream(&mut self) -> anyhow::Result<()> {
-        self.stream = None;
+        *self.stream.write().await = None;
         self.hdcp_stream = None;
         info!("Streaming stopped");
         self.event_tx.send(DaemonEvent::StreamingStopped).ok();
@@ -491,6 +510,9 @@ impl Daemon {
             RtspClient::accept_reverse(&bind_addr, go_ip, rtsp_port, Duration::from_secs(15))
                 .await?;
 
+        let (idr_tx, mut idr_rx) = mpsc::unbounded_channel::<()>();
+        rtsp_client.set_idr_channel(idr_tx);
+
         let sink_caps = self.exchange_rtsp_capabilities(&mut rtsp_client).await?;
 
         let sink_rtp_port = sink_caps
@@ -539,6 +561,19 @@ impl Daemon {
         )
         .await?;
         info!("Stream pipeline configured in reverse RTSP mode");
+
+        let stream_arc = self.stream.clone();
+        tokio::spawn(async move {
+            while idr_rx.recv().await.is_some() {
+                info!("IDR request received from TV, forcing keyframe");
+                let guard = stream_arc.read().await;
+                if let Some(ref pipeline) = *guard {
+                    if let Err(e) = pipeline.force_keyframe().await {
+                        error!("Failed to force keyframe: {}", e);
+                    }
+                }
+            }
+        });
 
         tokio::spawn(async move {
             rtsp_client.run_keepalive().await;
@@ -1343,8 +1378,12 @@ impl Daemon {
         }
     }
 
-    async fn negotiate_with_rtsp_client(&mut self, rtsp_client: RtspClient) -> anyhow::Result<()> {
-        let mut rtsp_client = rtsp_client;
+    async fn negotiate_with_rtsp_client(
+        &mut self,
+        mut rtsp_client: RtspClient,
+    ) -> anyhow::Result<()> {
+        let (idr_tx, mut idr_rx) = mpsc::unbounded_channel::<()>();
+        rtsp_client.set_idr_channel(idr_tx);
 
         let sink_caps = self.exchange_rtsp_capabilities(&mut rtsp_client).await?;
 
@@ -1395,6 +1434,19 @@ impl Daemon {
         )
         .await?;
         info!("Stream pipeline configured in RTSP client mode");
+
+        let stream_arc = self.stream.clone();
+        tokio::spawn(async move {
+            while idr_rx.recv().await.is_some() {
+                info!("IDR request received from TV, forcing keyframe");
+                let guard = stream_arc.read().await;
+                if let Some(ref pipeline) = *guard {
+                    if let Err(e) = pipeline.force_keyframe().await {
+                        error!("Failed to force keyframe: {}", e);
+                    }
+                }
+            }
+        });
 
         tokio::spawn(async move {
             rtsp_client.run_keepalive().await;
@@ -1473,11 +1525,21 @@ impl Daemon {
         destination_ip: &str,
         destination_rtp_port: u16,
     ) -> anyhow::Result<()> {
+        let (width, height, bitrate) = if self.config.extend_mode {
+            (3840, 2160, 20_000_000u32)
+        } else {
+            (
+                self.config.video_width,
+                self.config.video_height,
+                self.config.video_bitrate,
+            )
+        };
+
         let stream_config = StreamConfig {
             video_codec,
-            video_bitrate: self.config.video_bitrate,
-            video_width: self.config.video_width,
-            video_height: self.config.video_height,
+            video_bitrate: bitrate,
+            video_width: width,
+            video_height: height,
             video_framerate: self.config.video_framerate,
             audio_codec: AudioCodec::AAC,
             audio_bitrate: 128_000,
@@ -1486,21 +1548,14 @@ impl Daemon {
         };
 
         let capture_config = CaptureConfig {
-            width: self.config.video_width,
-            height: self.config.video_height,
+            width,
+            height,
             framerate: self.config.video_framerate,
             cursor_visible: true,
         };
         let mut capture = Capture::new(capture_config)?;
         let pw_stream = capture.start().await?;
-        info!(
-            "Screen capture started: node_id={}, fd={}",
-            pw_stream.node_id(),
-            pw_stream.fd()
-        );
-
-        let pipeline =
-            StreamPipeline::new_pipewire(stream_config, pw_stream.fd(), pw_stream.node_id())?;
+        let pipeline = StreamPipeline::new_pipewire(stream_config, pw_stream)?;
         pipeline
             .set_output(destination_ip, destination_rtp_port)
             .await?;
@@ -1511,9 +1566,119 @@ impl Daemon {
         );
 
         self.capture = Some(capture);
-        self.stream = Some(pipeline);
+        *self.stream.write().await = Some(pipeline);
         *self.state.write() = DaemonState::Streaming;
         Ok(())
+    }
+
+    fn setup_virtual_output(&mut self) -> anyhow::Result<String> {
+        let output = tokio::task::block_in_place(|| {
+            let out = std::process::Command::new("swaymsg")
+                .arg("create_output")
+                .output()
+                .map_err(|e| anyhow::anyhow!("Failed to run swaymsg create_output: {}", e))?;
+            if !out.status.success() {
+                anyhow::bail!(
+                    "swaymsg create_output failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let name = stdout.trim().trim_matches('"').to_string();
+            if name.is_empty() {
+                anyhow::bail!("swaymsg create_output returned empty output name");
+            }
+            Ok::<String, anyhow::Error>(name)
+        })?;
+
+        info!("Created virtual output: {}", output);
+
+        tokio::task::block_in_place(|| {
+            std::process::Command::new("swaymsg")
+                .args(["output", &output, "mode", "3840x2160@60Hz"])
+                .status()
+                .map_err(|e| anyhow::anyhow!("Failed to set output mode: {}", e))?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        tokio::task::block_in_place(|| {
+            std::process::Command::new("swaymsg")
+                .args(["output", &output, "pos", "1920 0"])
+                .status()
+                .map_err(|e| anyhow::anyhow!("Failed to set output position: {}", e))?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let portal_config_path = std::path::PathBuf::from(format!(
+            "{}/.config/xdg-desktop-portal-wlr/config",
+            std::env::var("HOME").unwrap_or_else(|_| "/home/agil".to_string())
+        ));
+
+        let original_config = std::fs::read_to_string(&portal_config_path).ok();
+        self.original_portal_config = original_config.clone();
+
+        let new_config = match &original_config {
+            Some(config) => {
+                let mut in_screencast = false;
+                let mut found_output = false;
+                let lines: Vec<String> = config
+                    .lines()
+                    .map(|line| {
+                        if line.trim() == "[screencast]" {
+                            in_screencast = true;
+                        } else if line.starts_with('[') {
+                            in_screencast = false;
+                        }
+                        if in_screencast && line.starts_with("output_name=") {
+                            found_output = true;
+                            format!("output_name={}", output)
+                        } else {
+                            line.to_string()
+                        }
+                    })
+                    .collect();
+                if !found_output {
+                    let mut result = lines;
+                    if !in_screencast {
+                        result.push("[screencast]".to_string());
+                    }
+                    result.push(format!("output_name={}", output));
+                    result.join("\n")
+                } else {
+                    lines.join("\n")
+                }
+            }
+            None => format!(
+                "[screencast]\noutput_name={}\nmax_fps=30\nchooser_type=simple\n",
+                output
+            ),
+        };
+
+        std::fs::write(&portal_config_path, &new_config)?;
+        info!("Updated portal-wlr config to capture {}", output);
+
+        self.virtual_output_name = Some(output.clone());
+        Ok(output)
+    }
+
+    fn cleanup_virtual_output(&mut self) {
+        if let Some(ref name) = self.virtual_output_name.take() {
+            info!("Cleaning up virtual output: {}", name);
+            tokio::task::block_in_place(|| {
+                let _ = std::process::Command::new("swaymsg")
+                    .args(["output", name, "disable"])
+                    .status();
+            });
+        }
+
+        if let Some(ref config) = self.original_portal_config.take() {
+            let portal_config_path = std::path::PathBuf::from(format!(
+                "{}/.config/xdg-desktop-portal-wlr/config",
+                std::env::var("HOME").unwrap_or_else(|_| "/home/agil".to_string())
+            ));
+            let _ = std::fs::write(&portal_config_path, config);
+            info!("Restored original portal-wlr config");
+        }
     }
 }
 

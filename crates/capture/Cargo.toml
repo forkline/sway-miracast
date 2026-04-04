@@ -17,6 +17,16 @@ futures-util = { workspace = true, optional = true }
 tokio-stream = { version = "0.1", optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 
+[dev-dependencies]
+gstreamer = { workspace = true }
+gstreamer-app = { workspace = true }
+env_logger = "0.11"
+anyhow = { workspace = true }
+
+[[example]]
+name = "snap"
+required-features = ["real_portal"]
+
 [features]
 default = []
 real_portal = ["dep:zbus", "dep:zvariant", "dep:pipewire", "dep:libspa", "dep:futures-util", "dep:tokio-stream", "dep:serde"]

@@ -24,6 +24,7 @@ mod session_simulation {
             interface: "wlan0".to_string(),
             preferred_sink: None,
             force_client_mode: false,
+            extend_mode: false,
         };
 
         let daemon = Daemon::with_config(config);

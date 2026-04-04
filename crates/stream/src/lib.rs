@@ -1,5 +1,5 @@
 use std::fmt;
-use std::os::unix::io::RawFd;
+use swaybeam_capture::PipeWireStream;
 mod test_pattern;
 pub use test_pattern::{Frame, TestPatternConfig, TestPatternGenerator};
 
@@ -225,6 +225,7 @@ struct StreamPipelineInner {
     output_port: Option<u16>,
     _audio_appsrc: Option<AppSrc>,
     bus_watch_guard: Option<gst::bus::BusWatchGuard>,
+    _pw_stream: Option<PipeWireStream>,
 }
 
 impl StreamPipelineInner {
@@ -454,187 +455,138 @@ impl StreamPipelineInner {
             output_port: None,
             _audio_appsrc: None,
             bus_watch_guard: Some(bus_watch_guard),
+            _pw_stream: None,
         })
     }
 
     pub fn new_pipewire(
         config: StreamConfig,
-        fd: RawFd,
-        node_id: u32,
+        pw_stream: PipeWireStream,
     ) -> Result<Self, StreamError> {
         gst::init()?;
 
-        let pipeline = gst::Pipeline::builder().name("miracast-stream-pw").build();
+        let fd = pw_stream.fd();
+        let node_id = pw_stream.node_id();
 
-        let pipewiresrc = gst::ElementFactory::make("pipewiresrc")
-            .name("video-source")
-            .build()?;
-        pipewiresrc.set_property("fd", fd);
-        pipewiresrc.set_property("target-object", format!("{}", node_id));
-        pipewiresrc.set_property("do-timestamp", true);
+        tracing::info!(
+            "Creating pipewire pipeline with fd={}, node_id={}",
+            fd,
+            node_id
+        );
 
-        let videoconvert = gst::ElementFactory::make("videoconvert").build()?;
+        std::env::set_var("PIPEWIRE_NODE", node_id.to_string());
+        tracing::info!("Set PIPEWIRE_NODE={}", node_id);
 
-        let encoder = gst::ElementFactory::make(config.video_codec.gstreamer_encoder()).build()?;
+        let encoder_name = config.video_codec.gstreamer_encoder();
+        let parser_name = config.video_codec.parser();
+        let rtp_payloader = config.video_codec.rtp_payloader();
 
-        let parser = gst::ElementFactory::make(config.video_codec.parser()).build()?;
+        let key_int_max = config.video_framerate * 2;
 
-        let codec_caps = gst::Caps::builder("video/x-h264")
-            .field("stream-format", "byte-stream")
-            .field("profile", "constrained-baseline")
-            .build();
-        let codecfilter = gst::ElementFactory::make("capsfilter")
-            .name("codecfilter")
-            .build()?;
-        codecfilter.set_property("caps", &codec_caps);
+        let encoder_opts = match config.video_codec {
+            VideoCodec::H264 => format!(
+                "tune=zerolatency speed-preset=veryfast bitrate={} key-int-max={}",
+                config.video_bitrate / 1000,
+                key_int_max
+            ),
+            VideoCodec::H265 => format!(
+                "tune=zerolatency speed-preset=fast bitrate={} key-int-max={}",
+                config.video_bitrate / 1000,
+                key_int_max
+            ),
+            VideoCodec::AV1 => format!(
+                "preset=8 target-bitrate={} key-int-max={}",
+                config.video_bitrate / 1000,
+                key_int_max
+            ),
+        };
 
-        let queue_mux = gst::ElementFactory::make("queue")
-            .name("queue-mux-video")
-            .build()?;
-        queue_mux.set_property("max-size-buffers", 1000u32);
-        queue_mux.set_property("max-size-time", 500_000_000u64);
+        let pipeline_str = format!(
+            "pipewiresrc name=src fd={fd} keepalive-time=1000 always-copy=true do-timestamp=true \
+             ! videoconvert \
+             ! {encoder_name} name=enc {encoder_opts} \
+             ! {parser_name} config-interval=-1 \
+             ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline \
+             ! queue name=queue-mux-video max-size-buffers=1000 max-size-time=500000000 \
+             ! mpegtsmux alignment=7 \
+             ! queue name=queue-pre-payloader max-size-buffers=1 \
+             ! {rtp_payloader} name=pay0 ssrc=1 perfect-rtptime=false timestamp-offset=0 seqnum-offset=0 \
+             ! udpsink name=udpsink host=127.0.0.1 port=5004 sync=false async=false"
+        );
 
-        let mpegtsmux = gst::ElementFactory::make("mpegtsmux")
-            .name("mpegtsmux")
-            .build()?;
-        mpegtsmux.set_property("alignment", 7i32);
+        tracing::info!("Pipeline string: {}", pipeline_str);
 
-        let queue_pay = gst::ElementFactory::make("queue")
-            .name("queue-pre-payloader")
-            .build()?;
-        queue_pay.set_property("max-size-buffers", 1u32);
+        tracing::info!("Checking PipeWire nodes at pipeline creation time...");
+        let check_output = std::process::Command::new("pw-dump")
+            .arg("-n")
+            .output()
+            .expect("Failed to run pw-dump");
+        tracing::info!(
+            "pw-dump output available: {} bytes",
+            check_output.stdout.len()
+        );
 
-        let rtp_pay = gst::ElementFactory::make(config.video_codec.rtp_payloader())
-            .name("pay0")
-            .build()?;
-        rtp_pay.set_property("ssrc", 1u32);
-        rtp_pay.set_property("perfect-rtptime", false);
-        rtp_pay.set_property("timestamp-offset", 0u32);
-        rtp_pay.set_property("seqnum-offset", 0i32);
+        let pipeline = gst::parse::launch(&pipeline_str)?;
+        let pipeline: gst::Pipeline = pipeline
+            .dynamic_cast()
+            .map_err(|_| StreamError::PipelineConstruction("Failed to cast to Pipeline".into()))?;
 
-        let udpsink = gst::ElementFactory::make("udpsink")
-            .name("udpsink")
-            .build()?;
-
-        match config.video_codec {
-            VideoCodec::H264 => {
-                encoder.set_property_from_str("tune", "zerolatency");
-                encoder.set_property_from_str("speed-preset", "veryfast");
-            }
-            VideoCodec::H265 => {
-                encoder.set_property_from_str("tune", "zerolatency");
-                encoder.set_property_from_str("speed-preset", "fast");
-            }
-            VideoCodec::AV1 => {
-                encoder.set_property("preset", 8i32);
-                encoder.set_property("target-bitrate", (config.video_bitrate / 1000) as i32);
-            }
-        }
-
-        if !matches!(config.video_codec, VideoCodec::AV1) {
-            encoder.set_property_from_str("bitrate", &(config.video_bitrate / 1000).to_string());
-        }
-        encoder.set_property_from_str("key-int-max", &(config.video_framerate * 2).to_string());
-
-        parser.set_property("config-interval", -1i32);
-
-        udpsink.set_property_from_str("host", "127.0.0.1");
-        udpsink.set_property_from_str("port", "5004");
-        udpsink.set_property("sync", false);
-        udpsink.set_property("async", false);
-
-        pipeline.add_many([
-            &pipewiresrc,
-            &videoconvert,
-            &encoder,
-            &parser,
-            &codecfilter,
-            &queue_mux,
-            &mpegtsmux,
-            &queue_pay,
-            &rtp_pay,
-            &udpsink,
-        ])?;
-
-        if pipewiresrc.link(&videoconvert).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link pipewiresrc to videoconvert".to_string(),
-            ));
-        }
-        if videoconvert.link(&encoder).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link videoconvert to encoder".to_string(),
-            ));
-        }
-        if encoder.link(&parser).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link encoder to parser".to_string(),
-            ));
-        }
-        if parser.link(&codecfilter).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link parser to codecfilter".to_string(),
-            ));
-        }
-        if codecfilter.link(&queue_mux).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link codecfilter to queue_mux".to_string(),
-            ));
-        }
-
-        let queue_mux_src = queue_mux.static_pad("src").ok_or_else(|| {
-            StreamError::PipelineConstruction("Failed to get queue_mux src pad".to_string())
+        let pipewiresrc = pipeline.by_name("src").ok_or_else(|| {
+            StreamError::PipelineConstruction("Failed to find pipewiresrc".into())
         })?;
-        let mpegtsmux_sink = mpegtsmux.request_pad_simple("sink_4113").ok_or_else(|| {
-            StreamError::PipelineConstruction(
-                "Failed to request sink_4113 pad from mpegtsmux".to_string(),
-            )
-        })?;
-        if queue_mux_src.link(&mpegtsmux_sink).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link queue_mux to mpegtsmux".to_string(),
-            ));
-        }
-
-        if mpegtsmux.link(&queue_pay).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link mpegtsmux to queue_pay".to_string(),
-            ));
-        }
-        if queue_pay.link(&rtp_pay).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link queue_pay to rtp_pay".to_string(),
-            ));
-        }
-        if rtp_pay.link(&udpsink).is_err() {
-            return Err(StreamError::PipelineConstruction(
-                "Failed to link rtp_pay to udpsink".to_string(),
-            ));
+        {
+            let src_pad = pipewiresrc.static_pad("src").ok_or_else(|| {
+                StreamError::PipelineConstruction("Failed to get pipewiresrc src pad".into())
+            })?;
+            src_pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                if let Some(gst::PadProbeData::Event(ref ev)) = info.data {
+                    if ev.type_() == gst::EventType::Caps {
+                        if let Some(s) = ev.structure() {
+                            tracing::info!("pipewiresrc negotiated caps: {}", s);
+                        }
+                    }
+                }
+                gst::PadProbeReturn::Ok
+            });
         }
 
         let bus_watch_guard = {
             let bus = pipeline
                 .bus()
-                .ok_or_else(|| StreamError::Internal("Pipeline has no bus".to_string()))?;
+                .ok_or_else(|| StreamError::Internal("Pipeline has no bus".into()))?;
 
             bus.add_watch_local(move |_, msg| {
                 match msg.view() {
                     gst::MessageView::Error(err) => {
                         tracing::error!(
-                            "GStreamer error: {}, details: {:?}",
+                            "GStreamer ERROR from {}: {} (code: {}), debug: {:?}",
+                            err.src()
+                                .map(|s| s.path_string())
+                                .unwrap_or_else(|| "unknown".into()),
                             err.error(),
+                            err.error().code(),
                             err.debug()
                         );
                     }
                     gst::MessageView::Warning(warn) => {
                         tracing::warn!(
-                            "GStreamer warning: {}, details: {:?}",
+                            "GStreamer WARNING from {}: {} (code: {}), debug: {:?}",
+                            warn.src()
+                                .map(|s| s.path_string())
+                                .unwrap_or_else(|| "unknown".into()),
                             warn.error(),
+                            warn.error().code(),
                             warn.debug()
                         );
                     }
                     gst::MessageView::Info(info) => {
-                        tracing::info!("GStreamer info: {:?}", info.error());
+                        tracing::info!(
+                            "GStreamer INFO from {}: {:?}",
+                            info.src()
+                                .map(|s| s.path_string())
+                                .unwrap_or_else(|| "unknown".into()),
+                            info.error()
+                        );
                     }
                     gst::MessageView::StateChanged(state_changed) => {
                         let src = state_changed
@@ -648,8 +600,30 @@ impl StreamPipelineInner {
                             state_changed.current()
                         );
                     }
+                    gst::MessageView::StreamStatus(status) => {
+                        tracing::info!(
+                            "Stream status: type={:?} from {}",
+                            status.type_(),
+                            status
+                                .src()
+                                .map(|s| s.path_string())
+                                .unwrap_or_else(|| "unknown".into())
+                        );
+                    }
+                    gst::MessageView::Buffering(buf) => {
+                        tracing::info!("Buffering: {}%", buf.percent());
+                    }
                     gst::MessageView::Eos(_) => {
-                        tracing::info!("Stream end-of-stream reached");
+                        tracing::warn!("Stream EOS reached");
+                    }
+                    gst::MessageView::Latency(_) => {
+                        tracing::debug!("Latency message");
+                    }
+                    gst::MessageView::NewClock(clock) => {
+                        tracing::debug!("New clock: {:?}", clock.clock().map(|c| c.name()));
+                    }
+                    gst::MessageView::Element(el) => {
+                        tracing::debug!("Element message: {:?}", el.structure());
                     }
                     _ => {}
                 }
@@ -657,6 +631,8 @@ impl StreamPipelineInner {
             })
             .map_err(|e| StreamError::Internal(format!("Failed to add bus watch: {}", e)))?
         };
+
+        tracing::info!("GStreamer pipeline constructed successfully via parse::launch");
 
         Ok(StreamPipelineInner {
             pipeline,
@@ -667,6 +643,7 @@ impl StreamPipelineInner {
             output_port: None,
             _audio_appsrc: None,
             bus_watch_guard: Some(bus_watch_guard),
+            _pw_stream: Some(pw_stream),
         })
     }
 
@@ -791,10 +768,9 @@ impl StreamPipeline {
 
     pub fn new_pipewire(
         config: StreamConfig,
-        fd: RawFd,
-        node_id: u32,
+        pw_stream: PipeWireStream,
     ) -> Result<Self, StreamError> {
-        let inner = StreamPipelineInner::new_pipewire(config, fd, node_id)?;
+        let inner = StreamPipelineInner::new_pipewire(config, pw_stream)?;
         Ok(StreamPipeline {
             inner: Arc::new(Mutex::new(inner)),
         })

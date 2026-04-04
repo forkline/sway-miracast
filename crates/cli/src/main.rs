@@ -42,6 +42,8 @@ enum Command {
         sink: Option<String>,
         #[arg(short, long)]
         client: bool,
+        #[arg(long)]
+        extend: bool,
     },
     Status,
 }
@@ -72,7 +74,11 @@ async fn main() -> Result<()> {
             framerate,
         } => stream_command(*width, *height, *framerate, cli.json).await,
         Command::Disconnect => disconnect_command(cli.json).await,
-        Command::Daemon { sink, client } => daemon_command(sink.clone(), *client, cli.json).await,
+        Command::Daemon {
+            sink,
+            client,
+            extend,
+        } => daemon_command(sink.clone(), *client, *extend, cli.json).await,
         Command::Status => status_command(cli.json).await,
     }
 }
@@ -258,16 +264,25 @@ async fn disconnect_command(json_output: bool) -> Result<()> {
     Ok(())
 }
 
-async fn daemon_command(sink: Option<String>, client_mode: bool, _json_output: bool) -> Result<()> {
+async fn daemon_command(
+    sink: Option<String>,
+    client_mode: bool,
+    extend_mode: bool,
+    _json_output: bool,
+) -> Result<()> {
     use swaybeam_daemon::{Daemon, DaemonConfig};
 
     println!("Starting Miracast daemon...");
     if client_mode {
         println!("Running in RTSP client mode (TV is Group Owner)");
     }
+    if extend_mode {
+        println!("Running in extend mode (4K virtual output)");
+    }
     let config = DaemonConfig {
         preferred_sink: sink,
         force_client_mode: client_mode,
+        extend_mode,
         ..Default::default()
     };
     let mut daemon = Daemon::with_config(config);
