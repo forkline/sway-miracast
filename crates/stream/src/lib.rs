@@ -493,10 +493,9 @@ impl StreamPipelineInner {
             .build()?;
 
         pipewiresrc.set_property("fd", fd);
-        pipewiresrc.set_property("path", node_id.to_string());
-        pipewiresrc.set_property("autoconnect", false);
+        pipewiresrc.set_property("target-object", "xdg-desktop-portal-wlr");
         pipewiresrc.set_property("do-timestamp", true);
-        pipewiresrc.set_property("keepalive-time", 1000u32);
+        pipewiresrc.set_property("keepalive-time", 1000i32);
         pipewiresrc.set_property("always-copy", true);
 
         let pipewiresrc_base: &gstreamer_app::gst_base::BaseSrc =
@@ -506,9 +505,8 @@ impl StreamPipelineInner {
         pipewiresrc_base.set_live(true);
 
         tracing::info!(
-            "pipewiresrc configured: fd={}, path={}, autoconnect=false, keepalive-time=1000, always-copy=true",
-            fd,
-            node_id
+            "pipewiresrc configured: fd={}, target-object=xdg-desktop-portal-wlr, keepalive-time=1000, always-copy=true",
+            fd
         );
 
         let videoconvert = gst::ElementFactory::make("videoconvert").build()?;
@@ -700,7 +698,7 @@ impl StreamPipelineInner {
             .map_err(|e| StreamError::Internal(format!("Failed to add bus watch: {}", e)))?
         };
 
-        tracing::info!("GStreamer pipeline constructed successfully via parse::launch");
+        tracing::info!("GStreamer pipeline constructed successfully with programmatic pipewiresrc");
 
         Ok(StreamPipelineInner {
             pipeline,
@@ -771,15 +769,21 @@ impl StreamPipelineInner {
 
     /// Starts the streaming pipeline
     pub fn start(&mut self) -> Result<(), StreamError> {
+        tracing::info!("Setting pipeline to Playing state...");
         let result = self.pipeline.set_state(gst::State::Playing);
         match result {
-            Ok(_) => {
+            Ok(state_change) => {
+                tracing::info!("Pipeline state change result: {:?}", state_change);
                 self.state = PipelineState::Playing;
+                tracing::info!("Pipeline successfully started");
                 Ok(())
             }
-            Err(_) => Err(StreamError::StateTransition(
-                "Failed to set pipeline to Playing state".into(),
-            )),
+            Err(e) => {
+                tracing::error!("Failed to set pipeline to Playing state: {:?}", e);
+                Err(StreamError::StateTransition(
+                    "Failed to set pipeline to Playing state".into(),
+                ))
+            }
         }
     }
 
