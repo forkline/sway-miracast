@@ -463,15 +463,24 @@ impl StreamPipelineInner {
         config: StreamConfig,
         pw_stream: PipeWireStream,
     ) -> Result<Self, StreamError> {
+        Self::new_pipewire_with_audio(config, pw_stream, None)
+    }
+
+    pub fn new_pipewire_with_audio(
+        config: StreamConfig,
+        pw_stream: PipeWireStream,
+        audio_monitor_device: Option<String>,
+    ) -> Result<Self, StreamError> {
         gst::init()?;
 
         let fd = pw_stream.fd();
         let node_id = pw_stream.node_id();
 
         tracing::info!(
-            "Creating pipewire pipeline with parse::launch, fd={}, node_id={}",
+            "Creating pipewire pipeline with parse::launch, fd={}, node_id={}, audio={:?}",
             fd,
-            node_id
+            node_id,
+            audio_monitor_device
         );
 
         let fd_valid = unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1;
@@ -483,17 +492,35 @@ impl StreamPipelineInner {
             )));
         }
 
+        let audio_branch = if let Some(ref monitor_device) = audio_monitor_device {
+            format!(
+                " pulsesrc name=audiosrc device=\"{}\" do-timestamp=true \
+                 ! audioconvert \
+                 ! audioresample \
+                 ! audio/x-raw,rate=48000,channels=2 \
+                 ! faac bitrate={} \
+                 ! aacparse \
+                 ! queue name=queue-mux-audio max-size-buffers=200 max-size-time=500000000 \
+                 ! mux.",
+                monitor_device, config.audio_bitrate
+            )
+        } else {
+            String::new()
+        };
+
         let pipeline_str = format!(
-            "pipewiresrc name=src fd={} target-object=xdg-desktop-portal-wlr keepalive-time=1000 always-copy=true do-timestamp=true \
+            "mpegtsmux name=mux alignment=7 \
+             ! queue name=queue-pre-payloader max-size-buffers=1 \
+             ! {} name=pay0 ssrc=1 perfect-rtptime=false timestamp-offset=0 seqnum-offset=0 \
+             ! udpsink name=udpsink host=127.0.0.1 port=5004 sync=false async=false \
+             pipewiresrc name=videosrc fd={} target-object=xdg-desktop-portal-wlr keepalive-time=1000 always-copy=true do-timestamp=true \
              ! videoconvert \
              ! {} name=enc {} {} \
              ! {} name=parser config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline \
              ! queue name=queue-mux-video max-size-buffers=1000 max-size-time=500000000 \
-             ! mpegtsmux alignment=7 \
-             ! queue name=queue-pre-payloader max-size-buffers=1 \
-             ! {} name=pay0 ssrc=1 perfect-rtptime=false timestamp-offset=0 seqnum-offset=0 \
-             ! udpsink name=udpsink host=127.0.0.1 port=5004 sync=false async=false",
+             ! mux.{}",
+            config.video_codec.rtp_payloader(),
             fd,
             config.video_codec.gstreamer_encoder(),
             match config.video_codec {
@@ -506,7 +533,7 @@ impl StreamPipelineInner {
                 VideoCodec::AV1 => "",
             },
             config.video_codec.parser(),
-            config.video_codec.rtp_payloader()
+            audio_branch
         );
 
         tracing::info!("Pipeline string: {}", pipeline_str);
@@ -746,6 +773,36 @@ impl StreamPipeline {
         Ok(StreamPipeline {
             inner: Arc::new(Mutex::new(inner)),
         })
+    }
+
+    pub fn new_pipewire_with_audio(
+        config: StreamConfig,
+        pw_stream: PipeWireStream,
+        audio_monitor_device: Option<String>,
+    ) -> Result<Self, StreamError> {
+        let inner =
+            StreamPipelineInner::new_pipewire_with_audio(config, pw_stream, audio_monitor_device)?;
+        Ok(StreamPipeline {
+            inner: Arc::new(Mutex::new(inner)),
+        })
+    }
+
+    pub fn get_default_audio_monitor() -> Option<String> {
+        let output = std::process::Command::new("pactl")
+            .args(["get-default-sink"])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let sink = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if sink.is_empty() {
+            return None;
+        }
+
+        Some(format!("{}.monitor", sink))
     }
 
     pub async fn set_output(&self, host: &str, port: u16) -> Result<(), StreamError> {

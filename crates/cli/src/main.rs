@@ -44,6 +44,8 @@ enum Command {
         client: bool,
         #[arg(long)]
         extend: bool,
+        #[arg(long)]
+        no_audio: bool,
     },
     Status,
 }
@@ -78,7 +80,8 @@ async fn main() -> Result<()> {
             sink,
             client,
             extend,
-        } => daemon_command(sink.clone(), *client, *extend, cli.json).await,
+            no_audio,
+        } => daemon_command(sink.clone(), *client, *extend, !no_audio, cli.json).await,
         Command::Status => status_command(cli.json).await,
     }
 }
@@ -268,6 +271,7 @@ async fn daemon_command(
     sink: Option<String>,
     client_mode: bool,
     extend_mode: bool,
+    audio: bool,
     _json_output: bool,
 ) -> Result<()> {
     use swaybeam_daemon::{Daemon, DaemonConfig};
@@ -279,10 +283,14 @@ async fn daemon_command(
     if extend_mode {
         println!("Running in extend mode (4K virtual output)");
     }
+    if !audio {
+        println!("Audio disabled");
+    }
     let config = DaemonConfig {
         preferred_sink: sink,
         force_client_mode: client_mode,
         extend_mode,
+        enable_audio: audio,
         ..Default::default()
     };
     let mut daemon = Daemon::with_config(config);

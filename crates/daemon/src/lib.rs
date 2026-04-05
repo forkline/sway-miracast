@@ -42,6 +42,7 @@ pub struct DaemonConfig {
     pub preferred_sink: Option<String>,
     pub force_client_mode: bool,
     pub extend_mode: bool,
+    pub enable_audio: bool,
 }
 
 impl Default for DaemonConfig {
@@ -56,6 +57,7 @@ impl Default for DaemonConfig {
             preferred_sink: None,
             force_client_mode: false,
             extend_mode: false,
+            enable_audio: true,
         }
     }
 }
@@ -1556,7 +1558,16 @@ impl Daemon {
         let mut capture = Capture::new(capture_config)?;
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         let pw_stream = capture.start().await?;
-        let pipeline = StreamPipeline::new_pipewire(stream_config, pw_stream)?;
+
+        let audio_monitor = if self.config.enable_audio {
+            StreamPipeline::get_default_audio_monitor()
+        } else {
+            None
+        };
+        info!("Audio monitor device: {:?}", audio_monitor);
+
+        let pipeline =
+            StreamPipeline::new_pipewire_with_audio(stream_config, pw_stream, audio_monitor)?;
         pipeline
             .set_output(destination_ip, destination_rtp_port)
             .await?;
