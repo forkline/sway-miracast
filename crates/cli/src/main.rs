@@ -22,8 +22,8 @@ pub enum CodecChoice {
     Auto,
     H264,
     H264Sw,
-    H265,
-    H265Sw,
+    // H265 - Disabled: requires HDCP 2.x for LG TVs (not yet implemented)
+    // H265Sw - Disabled: requires HDCP 2.x for LG TVs (not yet implemented)
 }
 
 #[derive(Subcommand)]
@@ -315,8 +315,9 @@ async fn daemon_command(
         CodecChoice::Auto => None,
         CodecChoice::H264 => Some(VideoCodec::H264Hardware),
         CodecChoice::H264Sw => Some(VideoCodec::H264),
-        CodecChoice::H265 => Some(VideoCodec::H265Hardware),
-        CodecChoice::H265Sw => Some(VideoCodec::H265),
+        // H265 options disabled: requires HDCP 2.x implementation
+        // CodecChoice::H265 => Some(VideoCodec::H265Hardware),
+        // CodecChoice::H265Sw => Some(VideoCodec::H265),
     };
 
     let config = DaemonConfig {
