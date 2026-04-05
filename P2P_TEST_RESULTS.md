@@ -161,3 +161,75 @@ env XDG_CURRENT_DESKTOP=sway \
 The fix should result in:
 - `pipewiresrc negotiated caps: ... width=(int)1920, height=(int)1080 ...`
 - TV showing actual screen content instead of webcam
+
+---
+
+## Further Investigation (April 5, 2026 - Session 2)
+
+### Fixes Applied
+
+1. **Fixed `keepalive-time` property type** (commit 18210b6):
+   - Changed from `u32` to `i32` (gint expected by GStreamer)
+   - Pipeline no longer panics on property set
+
+2. **Removed `autoconnect=false`**:
+   - The `autoconnect` property was blocking pipeline startup
+   - Removed to allow pipewiresrc to auto-start the stream
+
+3. **Added detailed logging**:
+   - Pipeline state change results
+   - Better error messages
+
+### Current Status
+
+**Pipeline now starts and streams to TV!**
+
+However, there's still an issue with source selection:
+- Portal returns `node_id=85/104/105` (correct screen capture node)
+- But pipewiresrc negotiates with 640x480 YUY2 format (webcam)
+- The TV receives the stream, but shows webcam instead of screen
+
+### Observations
+
+| Test | Result | Resolution |
+|------|--------|------------|
+| `snap` example | ✅ Works | 1920x1080 |
+| `screen_mirror` example | Same issue? | TBD |
+| Daemon with `target-object=xdg-desktop-portal-wlr` | ❌ Webcam | 640x480 |
+| Daemon with `path={node_id}` | ❌ Webcam | 640x480 |
+
+### Mystery
+
+The `snap` example uses `target-object=xdg-desktop-portal-wlr` and works correctly.
+The daemon uses the same approach but gets webcam content.
+
+**Possible causes:**
+1. Timing difference - portal session state at pipeline creation
+2. Environment difference - something in the daemon's process context
+3. PipeWire state - the node_id mapping might be different
+4. Portal instability - the portal has been crashing (see journal logs)
+
+### Next Steps
+
+1. **Check if the TV is actually showing webcam or something else** - verify output
+2. **Compare `screen_mirror` example** - does it also get webcam?
+3. **Try portal restart before each test** - rule out stale state
+4. **Check PipeWire node visibility** - what does `pw-cli` show during capture?
+5. **Test with different portal configuration** - remove `output_name` restriction
+
+### Commands for Further Debugging
+
+```bash
+# Check what PipeWire sees during capture
+watch -n1 'pw-cli ls Node | grep -A5 Video/Source'
+
+# Run daemon with full PipeWire debug
+GST_DEBUG=pipewiresrc:5 PIPEWIRE_DEBUG=4 \
+  ./target/release/swaybeam daemon --sink <TV_MAC> --client
+
+# Check portal state
+busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop
+
+# Monitor portal logs in real-time
+journalctl --user -u xdg-desktop-portal-wlr -f
+```
