@@ -83,6 +83,8 @@ pub struct Capture {
     config: CaptureConfig,
     active: bool,
     session_handle: Option<String>,
+    #[cfg(target_os = "linux")]
+    _dbus_connection: Option<zbus::Connection>,
 }
 
 #[cfg(target_os = "linux")]
@@ -104,6 +106,7 @@ impl Capture {
             config,
             active: false,
             session_handle: None,
+            _dbus_connection: None,
         })
     }
 
@@ -264,12 +267,12 @@ impl Capture {
                     CaptureError::PortalError(format!("Failed to parse streams entries: {}", e))
                 })?;
 
-        let (node_id, _props) = streams
+        let (node_id, props) = streams
             .into_iter()
             .next()
             .ok_or_else(|| CaptureError::PortalError("Empty streams array".into()))?;
 
-        info!("Got PipeWire node_id: {}", node_id);
+        info!("Got PipeWire node_id: {}, props: {:?}", node_id, props);
 
         // Step 4: OpenPipeWireRemote
         let pw_opts: HashMap<&str, Value<'_>> = HashMap::new();
@@ -280,6 +283,7 @@ impl Capture {
 
         let owned_fd = pw_fd.as_raw_fd();
         let duped_fd = unsafe { libc::dup(owned_fd) };
+        std::mem::forget(pw_fd);
         if duped_fd < 0 {
             return Err(CaptureError::PipeWireError(
                 "Failed to dup PipeWire fd".into(),
@@ -292,6 +296,7 @@ impl Capture {
         );
 
         self.session_handle = Some(session_handle_str.clone());
+        self._dbus_connection = Some(conn);
 
         Ok(PipeWireStream {
             fd: duped_fd,
