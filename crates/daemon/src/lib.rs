@@ -1554,6 +1554,7 @@ impl Daemon {
             cursor_visible: true,
         };
         let mut capture = Capture::new(capture_config)?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         let pw_stream = capture.start().await?;
         let pipeline = StreamPipeline::new_pipewire(stream_config, pw_stream)?;
         pipeline

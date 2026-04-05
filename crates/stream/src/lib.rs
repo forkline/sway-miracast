@@ -494,7 +494,10 @@ impl StreamPipelineInner {
 
         pipewiresrc.set_property("fd", fd);
         pipewiresrc.set_property("path", node_id.to_string());
+        pipewiresrc.set_property("autoconnect", false);
         pipewiresrc.set_property("do-timestamp", true);
+        pipewiresrc.set_property("keepalive-time", 1000u32);
+        pipewiresrc.set_property("always-copy", true);
 
         let pipewiresrc_base: &gstreamer_app::gst_base::BaseSrc =
             pipewiresrc.dynamic_cast_ref().ok_or_else(|| {
@@ -503,7 +506,7 @@ impl StreamPipelineInner {
         pipewiresrc_base.set_live(true);
 
         tracing::info!(
-            "pipewiresrc configured: fd={}, path={}, do-timestamp=true, live=true",
+            "pipewiresrc configured: fd={}, path={}, autoconnect=false, keepalive-time=1000, always-copy=true",
             fd,
             node_id
         );
