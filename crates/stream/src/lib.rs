@@ -6,10 +6,14 @@ pub use test_pattern::{Frame, TestPatternConfig, TestPatternGenerator};
 /// Possible video codecs supported by the stream
 #[derive(Debug, Clone, PartialEq)]
 pub enum VideoCodec {
-    /// H.264 codec, primary for Miracast
+    /// H.264 codec with software encoder (x264)
     H264,
-    /// H.265/HEVC codec, better for 4K streaming
+    /// H.264 codec with hardware encoder (VA-API)
+    H264Hardware,
+    /// H.265/HEVC codec with software encoder (x265)
     H265,
+    /// H.265/HEVC codec with hardware encoder (VA-API)
+    H265Hardware,
     /// AV1 codec, future-proof with best compression
     AV1,
 }
@@ -17,9 +21,98 @@ pub enum VideoCodec {
 impl fmt::Display for VideoCodec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VideoCodec::H264 => write!(f, "H264"),
-            VideoCodec::H265 => write!(f, "H265"),
+            VideoCodec::H264 => write!(f, "H264 (software)"),
+            VideoCodec::H264Hardware => write!(f, "H264 (hardware)"),
+            VideoCodec::H265 => write!(f, "H265 (software)"),
+            VideoCodec::H265Hardware => write!(f, "H265 (hardware)"),
             VideoCodec::AV1 => write!(f, "AV1"),
+        }
+    }
+}
+
+impl VideoCodec {
+    pub fn gstreamer_encoder(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "x264enc",
+            VideoCodec::H264Hardware => "vah264enc",
+            VideoCodec::H265 => "x265enc",
+            VideoCodec::H265Hardware => "vah265enc",
+            VideoCodec::AV1 => "svtav1enc",
+        }
+    }
+
+    pub fn rtp_payloader(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 | VideoCodec::H264Hardware => "rtpmp2tpay",
+            VideoCodec::H265 | VideoCodec::H265Hardware => "rtpmp2tpay",
+            VideoCodec::AV1 => "rtpav1pay",
+        }
+    }
+
+    pub fn parser(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 | VideoCodec::H264Hardware => "h264parse",
+            VideoCodec::H265 | VideoCodec::H265Hardware => "h265parse",
+            VideoCodec::AV1 => "av1parse",
+        }
+    }
+
+    pub fn caps_name(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 | VideoCodec::H264Hardware => "video/x-h264",
+            VideoCodec::H265 | VideoCodec::H265Hardware => "video/x-h265",
+            VideoCodec::AV1 => "video/x-av1",
+        }
+    }
+
+    pub fn profile(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 | VideoCodec::H264Hardware => "constrained-baseline",
+            VideoCodec::H265 | VideoCodec::H265Hardware => "main",
+            VideoCodec::AV1 => "main",
+        }
+    }
+
+    pub fn level(&self) -> &'static str {
+        match self {
+            VideoCodec::H264 | VideoCodec::H264Hardware => "4.0",
+            VideoCodec::H265 | VideoCodec::H265Hardware => "4.1",
+            VideoCodec::AV1 => "seq-profile_0_seq-level_4-0",
+        }
+    }
+
+    pub fn is_hardware(&self) -> bool {
+        matches!(self, VideoCodec::H264Hardware | VideoCodec::H265Hardware)
+    }
+
+    pub fn is_hevc(&self) -> bool {
+        matches!(self, VideoCodec::H265 | VideoCodec::H265Hardware)
+    }
+
+    pub fn encoder_properties(&self, bitrate: u32, framerate: u32) -> String {
+        let key_int_max = framerate * 2;
+        match self {
+            VideoCodec::H264 => format!(
+                "tune=zerolatency speed-preset=veryfast bitrate={} key-int-max={}",
+                bitrate / 1000,
+                key_int_max
+            ),
+            VideoCodec::H264Hardware => format!(
+                "bitrate={} rate-control=cbr target-usage=4 key-int-max={}",
+                bitrate / 1000,
+                key_int_max
+            ),
+            VideoCodec::H265 => format!(
+                "tune=zerolatency speed-preset=veryfast bitrate={} key-int-max={}",
+                bitrate / 1000,
+                key_int_max
+            ),
+            VideoCodec::H265Hardware => format!(
+                "bitrate={} rate-control=cbr target-usage=4 key-int-max={}",
+                bitrate / 1000,
+                key_int_max
+            ),
+            VideoCodec::AV1 => format!("preset=8 target-bitrate={}", bitrate / 1000),
         }
     }
 }
@@ -38,40 +131,6 @@ impl fmt::Display for AudioCodec {
         match self {
             AudioCodec::AAC => write!(f, "AAC"),
             AudioCodec::LPCM => write!(f, "LPCM"),
-        }
-    }
-}
-
-impl VideoCodec {
-    pub fn gstreamer_encoder(&self) -> &'static str {
-        match self {
-            VideoCodec::H264 => "x264enc",
-            VideoCodec::H265 => "x265enc",
-            VideoCodec::AV1 => "svtav1enc", // or "av1enc"
-        }
-    }
-
-    pub fn rtp_payloader(&self) -> &'static str {
-        match self {
-            VideoCodec::H264 => "rtpmp2tpay",
-            VideoCodec::H265 => "rtpmp2tpay",
-            VideoCodec::AV1 => "rtpav1pay",
-        }
-    }
-
-    pub fn parser(&self) -> &'static str {
-        match self {
-            VideoCodec::H264 => "h264parse",
-            VideoCodec::H265 => "h265parse",
-            VideoCodec::AV1 => "av1parse",
-        }
-    }
-
-    pub fn caps_name(&self) -> &'static str {
-        match self {
-            VideoCodec::H264 => "video/x-h264",
-            VideoCodec::H265 => "video/x-h265",
-            VideoCodec::AV1 => "video/x-av1",
         }
     }
 }
@@ -300,13 +359,13 @@ impl StreamPipelineInner {
         }
 
         match config.video_codec {
-            VideoCodec::H264 => {
+            VideoCodec::H264 | VideoCodec::H265 => {
                 set_prop_safe(&encoder, "tune", "zerolatency");
                 set_prop_safe(&encoder, "speed-preset", "veryfast");
             }
-            VideoCodec::H265 => {
-                set_prop_safe(&encoder, "tune", "zerolatency");
-                set_prop_safe(&encoder, "speed-preset", "fast");
+            VideoCodec::H264Hardware | VideoCodec::H265Hardware => {
+                set_prop_safe(&encoder, "rate-control", "cbr");
+                set_prop_int_safe(&encoder, "target-usage", 4);
             }
             VideoCodec::AV1 => {
                 set_prop_int_safe(&encoder, "preset", 8);
@@ -501,40 +560,77 @@ impl StreamPipelineInner {
                  ! faac bitrate={} \
                  ! aacparse \
                  ! queue name=queue-mux-audio max-size-buffers=200 max-size-time=500000000 \
-                 ! mux.",
+                 ! mux.sink_4352",
                 monitor_device, config.audio_bitrate
             )
         } else {
             String::new()
         };
 
-        let pipeline_str = format!(
-            "mpegtsmux name=mux alignment=7 \
-             ! queue name=queue-pre-payloader max-size-buffers=1 \
-             ! {} name=pay0 ssrc=1 perfect-rtptime=false timestamp-offset=0 seqnum-offset=0 \
-             ! udpsink name=udpsink host=127.0.0.1 port=5004 sync=false async=false \
-             pipewiresrc name=videosrc fd={} target-object=xdg-desktop-portal-wlr keepalive-time=1000 always-copy=true do-timestamp=true \
-             ! videoconvert \
-             ! {} name=enc {} {} \
-             ! {} name=parser config-interval=-1 \
-             ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline \
-             ! queue name=queue-mux-video max-size-buffers=1000 max-size-time=500000000 \
-             ! mux.{}",
-            config.video_codec.rtp_payloader(),
-            fd,
-            config.video_codec.gstreamer_encoder(),
-            match config.video_codec {
-                VideoCodec::H264 => "tune=zerolatency speed-preset=veryfast bitrate=8000 key-int-max=60",
-                VideoCodec::H265 => "tune=zerolatency speed-preset=fast bitrate=8000 key-int-max=60",
-                VideoCodec::AV1 => "preset=8 target-bitrate=8000",
-            },
-            match config.video_codec {
-                VideoCodec::H264 | VideoCodec::H265 => "",
-                VideoCodec::AV1 => "",
-            },
-            config.video_codec.parser(),
-            audio_branch
-        );
+        let encoder_props = config
+            .video_codec
+            .encoder_properties(config.video_bitrate, config.video_framerate);
+        let caps_str = if config.video_codec.is_hevc() {
+            format!(
+                "{},stream-format=byte-stream,profile={},level={},tier=main",
+                config.video_codec.caps_name(),
+                config.video_codec.profile(),
+                config.video_codec.level()
+            )
+        } else {
+            format!(
+                "{},stream-format=byte-stream,profile={}",
+                config.video_codec.caps_name(),
+                config.video_codec.profile()
+            )
+        };
+
+        let video_mux_pad = "sink_4113";
+        let pipeline_str = if audio_branch.is_empty() {
+            format!(
+                "mpegtsmux name=mux alignment=7 \
+                 ! queue name=queue-pre-payloader max-size-buffers=1 \
+                 ! {} name=pay0 ssrc=1 perfect-rtptime=false timestamp-offset=0 seqnum-offset=0 \
+                 ! udpsink name=udpsink host=127.0.0.1 port=5004 sync=false async=false \
+                 pipewiresrc name=videosrc fd={} target-object=xdg-desktop-portal-wlr keepalive-time=1000 always-copy=true do-timestamp=true \
+                 ! videoconvert \
+                 ! {} name=enc {} \
+                 ! {} name=parser config-interval=-1 \
+                 ! {} \
+                 ! queue name=queue-mux-video max-size-buffers=1000 max-size-time=500000000 \
+                 ! mux.{}",
+                config.video_codec.rtp_payloader(),
+                fd,
+                config.video_codec.gstreamer_encoder(),
+                encoder_props,
+                config.video_codec.parser(),
+                caps_str,
+                video_mux_pad
+            )
+        } else {
+            format!(
+                "mpegtsmux name=mux alignment=7 \
+                 ! queue name=queue-pre-payloader max-size-buffers=1 \
+                 ! {} name=pay0 ssrc=1 perfect-rtptime=false timestamp-offset=0 seqnum-offset=0 \
+                 ! udpsink name=udpsink host=127.0.0.1 port=5004 sync=false async=false \
+                 pipewiresrc name=videosrc fd={} target-object=xdg-desktop-portal-wlr keepalive-time=1000 always-copy=true do-timestamp=true \
+                 ! videoconvert \
+                 ! {} name=enc {} \
+                 ! {} name=parser config-interval=-1 \
+                 ! {} \
+                 ! queue name=queue-mux-video max-size-buffers=1000 max-size-time=500000000 \
+                 ! mux.{} \
+                 {}",
+                config.video_codec.rtp_payloader(),
+                fd,
+                config.video_codec.gstreamer_encoder(),
+                encoder_props,
+                config.video_codec.parser(),
+                caps_str,
+                video_mux_pad,
+                audio_branch
+            )
+        };
 
         tracing::info!("Pipeline string: {}", pipeline_str);
 
@@ -803,6 +899,41 @@ impl StreamPipeline {
         }
 
         Some(format!("{}.monitor", sink))
+    }
+
+    pub fn is_hardware_encoder_available(codec: &VideoCodec) -> bool {
+        let encoder_name = match codec {
+            VideoCodec::H264 | VideoCodec::H264Hardware => "vah264enc",
+            VideoCodec::H265 | VideoCodec::H265Hardware => "vah265enc",
+            VideoCodec::AV1 => return false,
+        };
+
+        let output = std::process::Command::new("gst-inspect-1.0")
+            .arg(encoder_name)
+            .output()
+            .ok();
+
+        output.map(|o| o.status.success()).unwrap_or(false)
+    }
+
+    pub fn select_best_codec(prefer_hevc: bool) -> VideoCodec {
+        if prefer_hevc {
+            if Self::is_hardware_encoder_available(&VideoCodec::H265Hardware) {
+                tracing::info!("Selected H265Hardware encoder (VA-API)");
+                VideoCodec::H265Hardware
+            } else {
+                tracing::info!("Selected H265 encoder (software, hardware not available)");
+                VideoCodec::H265
+            }
+        } else {
+            if Self::is_hardware_encoder_available(&VideoCodec::H264Hardware) {
+                tracing::info!("Selected H264Hardware encoder (VA-API)");
+                VideoCodec::H264Hardware
+            } else {
+                tracing::info!("Selected H264 encoder (software, hardware not available)");
+                VideoCodec::H264
+            }
+        }
     }
 
     pub async fn set_output(&self, host: &str, port: u16) -> Result<(), StreamError> {

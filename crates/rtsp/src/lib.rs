@@ -177,25 +177,53 @@ impl WfdCapabilities {
 impl WfdCapabilities {
     /// Negotiate the best video codec based on sink capabilities
     pub fn negotiate_video_codec(&self) -> NegotiatedCodec {
-        // Parse video_formats to determine supported codecs
         if let Some(formats) = &self.video_formats {
-            // Format is space-separated string like "01 01 00 000000000000001F"
-            // The last component is the formats mask
-            let components: Vec<&str> = formats.split_whitespace().collect();
-            if components.len() >= 4 {
-                if let Ok(mask) = u64::from_str_radix(components[3], 16) {
-                    // Check for H.265 support (typically bit 4, 0x10)
-                    if (mask & 0x0000000000000010) != 0 {
-                        return NegotiatedCodec::H265;
-                    }
-                    // Check for H.264 support (bits 0, 1, 2 for baseline, main, high)
-                    if (mask & 0x0000000000000007) != 0 {
-                        return NegotiatedCodec::H264;
+            let formats_list: Vec<&str> = formats.split(',').map(|s| s.trim()).collect();
+
+            tracing::debug!(
+                "Parsing video formats for codec negotiation: {:?}",
+                formats_list
+            );
+
+            // First pass: check for explicit H.265 codec type "02" (WFD 2.0)
+            for format in &formats_list {
+                if format.starts_with("02 ") {
+                    tracing::debug!(
+                        "Detected H.265/HEVC from explicit codec type '02': {}",
+                        format
+                    );
+                    return NegotiatedCodec::H265;
+                }
+            }
+
+            // Second pass: check codec mask for H.265 bit in any format
+            // WFD 1.x uses codec mask with bit 4 (0x10) for H.265 support
+            for format in &formats_list {
+                let components: Vec<&str> = format.split_whitespace().collect();
+                if components.len() >= 4 {
+                    if let Ok(mask) = u64::from_str_radix(components[3], 16) {
+                        tracing::debug!(
+                            "Checking codec mask in format '{}': mask={}",
+                            format,
+                            mask
+                        );
+                        if (mask & 0x0000000000000010) != 0 {
+                            tracing::debug!("Codec mask indicates H.265 support");
+                            return NegotiatedCodec::H265;
+                        }
                     }
                 }
             }
+
+            // Third pass: check for H.264 codec types "01" or "40"
+            for format in &formats_list {
+                if format.starts_with("01 ") || format.starts_with("40 ") {
+                    tracing::debug!("Detected H.264/AVC from codec type: {}", format);
+                    return NegotiatedCodec::H264;
+                }
+            }
         }
-        // Default to H.264
+        tracing::warn!("No video format detected, defaulting to H.264");
         NegotiatedCodec::H264
     }
 
@@ -212,14 +240,38 @@ impl WfdCapabilities {
     }
 
     pub fn build_video_formats() -> String {
-        // Build WFD video formats string advertising H.264 for maximum compatibility
-        // Format: "version preferred-display-mode uibc-capability video-formats"
-        // Version = 01 (WFD Version 1.0.0)
-        // Preferred display mode = 01 (non-native display on, native display off)
-        // UIBC = 00 (none)
-        // Video formats: bit 0: baseline, 1: main, 2: high profile, 4: H.265
-        // Mask 0000000000000007 supports H.264 profiles, mask 0000000000000017 adds H.265
         "01 01 00 0000000000000017".to_string()
+    }
+
+    pub fn select_video_formats(sink_formats: &str, prefer_hevc: bool) -> String {
+        let formats: Vec<&str> = sink_formats.split(',').map(|s| s.trim()).collect();
+
+        tracing::debug!("Parsing video formats for selection: {:?}", formats);
+
+        // H.265/HEVC has codec type "02" (WFD 2.0)
+        let h265_format = formats.iter().find(|f| f.starts_with("02 "));
+        // H.264/AVC has codec types "01" (WFD 1.0) or "40" (H.264 SVC)
+        let h264_format = formats
+            .iter()
+            .find(|f| f.starts_with("01 ") || f.starts_with("40 "));
+
+        tracing::debug!("Found H.264 format: {:?}", h264_format);
+        tracing::debug!("Found H.265 format: {:?}", h265_format);
+
+        if prefer_hevc {
+            if let Some(h265) = h265_format {
+                tracing::info!("Selected H.265 format from TV: {}", h265);
+                return h265.to_string();
+            }
+        }
+
+        if let Some(h264) = h264_format {
+            tracing::info!("Selected H.264 format from TV: {}", h264);
+            return h264.to_string();
+        }
+
+        tracing::warn!("No matching format found, using capabilities string");
+        Self::build_video_formats()
     }
 
     pub fn build_audio_codecs() -> String {

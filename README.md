@@ -35,6 +35,20 @@ just daemon
 | xdg-desktop-portal-wlr | Screen capture | `xdg-desktop-portal-wlr` |
 | just | Command runner (optional) | `just` |
 
+### Optional: Hardware Video Encoding
+
+For lower CPU usage and smoother streaming, install hardware encoding support:
+
+| Component | Why Needed | Install (Arch) |
+|-----------|-----------|----------------|
+| intel-media-driver | Intel GPU video acceleration | `intel-media-driver` |
+| gst-plugin-va | VA-API GStreamer plugins | `gst-plugin-va` |
+
+```bash
+# Install hardware encoding support for Intel GPUs
+sudo pacman -S intel-media-driver gst-plugin-va
+```
+
 ## Installation
 
 ### Arch Linux (Recommended)
@@ -144,13 +158,73 @@ swaybeam status              # Show connection status
 
 ## Video Codecs
 
-| Codec | Resolution | Bitrate | Use Case |
-|-------|------------|---------|----------|
-| H.264 | 1080p | 8 Mbps | Universal compatibility |
-| H.265 | 4K | 20 Mbps | Better quality for 4K TVs |
-| AV1 | Any | 5 Mbps | Future-proof, best compression |
+swaybeam supports multiple video codecs with both software and hardware encoding:
 
-H.265 is automatically used for 4K streaming. H.264 is used for 1080p for maximum compatibility.
+### Supported Codecs
+
+| Codec | Encoder | Type | CPU Usage | Quality |
+|-------|---------|------|-----------|---------|
+| H.264 | `x264enc` | Software | High | Good |
+| H.264 | `vah264enc` | Hardware (VA-API) | Low | Good |
+| H.265 | `x265enc` | Software | High | Better |
+| H.265 | `vah265enc` | Hardware (VA-API) | Low | Better |
+| AV1 | `svtav1enc` | Software | Medium | Best |
+
+### CLI Options
+
+```bash
+# Auto-select best codec (default) - prefers hardware H.265 if TV supports it
+swaybeam daemon --sink "TV" --client
+
+# Force H.265 with hardware encoding
+swaybeam daemon --sink "TV" --client --codec h265
+
+# Force H.265 with software encoding (fallback)
+swaybeam daemon --sink "TV" --client --codec h265-sw
+
+# Force H.264 with hardware encoding
+swaybeam daemon --sink "TV" --client --codec h264
+
+# Force H.264 with software encoding (most compatible)
+swaybeam daemon --sink "TV" --client --codec h264-sw
+```
+
+### Hardware Encoding Dependencies
+
+For Intel/AMD GPUs (VA-API hardware encoding):
+
+| Distribution | Packages |
+|--------------|----------|
+| Arch Linux | `sudo pacman -S intel-media-driver gst-plugin-va` |
+| Ubuntu/Debian | `sudo apt install intel-media-va-driver-non-free gstreamer1.0-vaapi` |
+| Fedora | `sudo dnf install intel-media-driver gstreamer1-vaapi` |
+
+**Note:**
+- `intel-media-driver` is for Intel Broadwell (5th gen) and newer
+- For older Intel GPUs (Haswell and earlier), use `libva-intel-driver` instead
+- AMD users need `mesa-va-drivers` (usually installed by default)
+
+### Verifying Hardware Encoding
+
+Check if hardware encoders are available:
+
+```bash
+# Check VA-API H.265 encoder
+gst-inspect-1.0 vah265enc
+
+# Check VA-API H.264 encoder
+gst-inspect-1.0 vah264enc
+```
+
+If these return "No such element", hardware encoding is not available and swaybeam will fall back to software encoding.
+
+### Audio Streaming
+
+Audio is enabled by default, capturing from the default audio output monitor. To disable:
+
+```bash
+swaybeam daemon --sink "TV" --client --no-audio
+```
 
 ## Development
 

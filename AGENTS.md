@@ -223,3 +223,36 @@ When adding dependencies:
 2. Add version constraint (e.g., `"1.0"`)
 3. Run `cargo update` to update lock file
 4. Document why dependency is needed
+
+## H.265/HEVC Support Notes
+
+### Current Status
+
+- **H.264** works with hardware encoding (`vah264enc`) and software encoding (`x264enc`)
+- **H.265** is negotiated correctly but fails on LG TVs due to HDCP requirement
+
+### Technical Findings
+
+1. **WFD Format Parsing**
+   - WFD 2.0 H.265 format starts with `02` (codec type)
+   - WFD 1.0/2.0 H.264 format starts with `01` or `40` (SVC)
+   - Legacy format uses codec mask (bit 4 = 0x10 for H.265)
+
+2. **LG TV HDCP Requirement**
+   - LG TVs require HDCP 2.x for H.265 streams
+   - We currently respond with `wfd_content_protection: none`
+   - TV sends TEARDOWN ~20s after PLAY when HDCP is missing for H.265
+
+3. **H.265 Caps Requirements**
+   - Profile: `main` (required by WFD spec)
+   - Level: `4.1` (1080p60)
+   - Tier: `main`
+   - Stream format: `byte-stream` (Annex B)
+
+### Implementing HDCP Support
+
+To enable H.265 on LG TVs, HDCP 2.x must be implemented:
+1. Parse `wfd_content_protection` from TV (e.g., `HDCP2.1 port=53004`)
+2. Implement HDCP 2.x handshake over the specified port
+3. Encrypt video/audio streams with session keys
+4. This is a significant undertaking requiring cryptographic implementation

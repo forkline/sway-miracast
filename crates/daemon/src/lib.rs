@@ -43,6 +43,7 @@ pub struct DaemonConfig {
     pub force_client_mode: bool,
     pub extend_mode: bool,
     pub enable_audio: bool,
+    pub video_codec: Option<VideoCodec>,
 }
 
 impl Default for DaemonConfig {
@@ -58,6 +59,7 @@ impl Default for DaemonConfig {
             force_client_mode: false,
             extend_mode: false,
             enable_audio: true,
+            video_codec: None,
         }
     }
 }
@@ -1478,11 +1480,27 @@ impl Daemon {
         let sink_caps = rtsp_client.send_get_parameter(params_to_request).await?;
         info!("Sink capabilities: {:?}", sink_caps);
 
+        let prefer_hevc = if let Some(codec) = &self.config.video_codec {
+            codec.is_hevc()
+        } else {
+            sink_caps
+                .get("wfd_video_formats")
+                .map(|formats| formats.contains("02"))
+                .unwrap_or(false)
+                && !self.config.extend_mode
+        };
+
+        let selected_video_format = sink_caps
+            .get("wfd_video_formats")
+            .map(|formats| {
+                swaybeam_rtsp::WfdCapabilities::select_video_formats(formats, prefer_hevc)
+            })
+            .unwrap_or_else(swaybeam_rtsp::WfdCapabilities::build_video_formats);
+
+        info!("Selected video format: {}", selected_video_format);
+
         let mut source_caps = std::collections::HashMap::new();
-        source_caps.insert(
-            "wfd_video_formats".to_string(),
-            swaybeam_rtsp::WfdCapabilities::build_video_formats(),
-        );
+        source_caps.insert("wfd_video_formats".to_string(), selected_video_format);
         source_caps.insert(
             "wfd_audio_codecs".to_string(),
             swaybeam_rtsp::WfdCapabilities::build_audio_codecs(),
@@ -1504,15 +1522,44 @@ impl Daemon {
     /// Determine video codec from sink capabilities
     fn get_negotiated_codec(
         &self,
-        _sink_caps: &std::collections::HashMap<String, String>,
+        sink_caps: &std::collections::HashMap<String, String>,
     ) -> VideoCodec {
-        VideoCodec::H264
+        if let Some(codec) = &self.config.video_codec {
+            info!("Using configured codec: {}", codec);
+            return codec.clone();
+        }
+
+        let hevc_supported = sink_caps
+            .get("wfd_video_formats")
+            .map(|formats| formats.contains("02"))
+            .unwrap_or(false);
+
+        let prefer_hevc = hevc_supported && !self.config.extend_mode;
+
+        let selected = StreamPipeline::select_best_codec(prefer_hevc);
+        info!(
+            "Auto-selected codec: {} (HEVC supported by TV: {})",
+            selected, hevc_supported
+        );
+        selected
     }
 
     fn map_negotiated_codec(codec: NegotiatedCodec) -> VideoCodec {
         match codec {
-            NegotiatedCodec::H264 => VideoCodec::H264,
-            NegotiatedCodec::H265 => VideoCodec::H265,
+            NegotiatedCodec::H264 => {
+                if StreamPipeline::is_hardware_encoder_available(&VideoCodec::H264Hardware) {
+                    VideoCodec::H264Hardware
+                } else {
+                    VideoCodec::H264
+                }
+            }
+            NegotiatedCodec::H265 => {
+                if StreamPipeline::is_hardware_encoder_available(&VideoCodec::H265Hardware) {
+                    VideoCodec::H265Hardware
+                } else {
+                    VideoCodec::H265
+                }
+            }
             NegotiatedCodec::AV1 => VideoCodec::AV1,
         }
     }

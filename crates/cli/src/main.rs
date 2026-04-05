@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use std::time::Duration;
 use tabled::{Table, Tabled};
@@ -15,6 +15,15 @@ struct Cli {
 
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum CodecChoice {
+    Auto,
+    H264,
+    H264Sw,
+    H265,
+    H265Sw,
 }
 
 #[derive(Subcommand)]
@@ -46,6 +55,8 @@ enum Command {
         extend: bool,
         #[arg(long)]
         no_audio: bool,
+        #[arg(long, value_enum, default_value = "auto")]
+        codec: CodecChoice,
     },
     Status,
 }
@@ -81,7 +92,18 @@ async fn main() -> Result<()> {
             client,
             extend,
             no_audio,
-        } => daemon_command(sink.clone(), *client, *extend, !no_audio, cli.json).await,
+            codec,
+        } => {
+            daemon_command(
+                sink.clone(),
+                *client,
+                *extend,
+                !no_audio,
+                codec.clone(),
+                cli.json,
+            )
+            .await
+        }
         Command::Status => status_command(cli.json).await,
     }
 }
@@ -272,9 +294,11 @@ async fn daemon_command(
     client_mode: bool,
     extend_mode: bool,
     audio: bool,
+    codec: CodecChoice,
     _json_output: bool,
 ) -> Result<()> {
     use swaybeam_daemon::{Daemon, DaemonConfig};
+    use swaybeam_stream::VideoCodec;
 
     println!("Starting Miracast daemon...");
     if client_mode {
@@ -286,11 +310,21 @@ async fn daemon_command(
     if !audio {
         println!("Audio disabled");
     }
+
+    let video_codec = match codec {
+        CodecChoice::Auto => None,
+        CodecChoice::H264 => Some(VideoCodec::H264Hardware),
+        CodecChoice::H264Sw => Some(VideoCodec::H264),
+        CodecChoice::H265 => Some(VideoCodec::H265Hardware),
+        CodecChoice::H265Sw => Some(VideoCodec::H265),
+    };
+
     let config = DaemonConfig {
         preferred_sink: sink,
         force_client_mode: client_mode,
         extend_mode,
         enable_audio: audio,
+        video_codec,
         ..Default::default()
     };
     let mut daemon = Daemon::with_config(config);
