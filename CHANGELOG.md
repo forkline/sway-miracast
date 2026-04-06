@@ -7,35 +7,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [unreleased]
 
+### Fixed
+
+- Correct changelog generation and add missing tags ([e49abf3](https://github.com/forkline/swaybeam/commit/e49abf3ef6b6c11bed814598e650de9df63b8cf4))
+
 ### Documentation
 
 - Update CHANGELOG with complete v0.4.0 history ([fa45de3](https://github.com/forkline/swaybeam/commit/fa45de31600b8121520b9c2b5b6ebb5ad08cf1f8))
 - Update release skill with correct changelog generation ([1f67cad](https://github.com/forkline/swaybeam/commit/1f67cad775c92cc41ba26c0d1afdd4f6a8726a9a))
 - Regenerate CHANGELOG with all version sections ([94049b2](https://github.com/forkline/swaybeam/commit/94049b26542a9b718a6b36deb0149133f310d8b8))
+- Clean up CHANGELOG - keep only released versions ([33c95b8](https://github.com/forkline/swaybeam/commit/33c95b86a2b4ccc31bff54fa44aa537f663e95f8))
 ## [v0.4.0](https://github.com/forkline/swaybeam/tree/v0.4.0) - 2026-04-06
 
 ### Added
 
-- audio: Add virtual audio sink for TV streaming with --audio flag ([4ed0c15](https://github.com/forkline/swaybeam/commit/4ed0c15eaf4f5cf15f849140d1cae959b253802b))
-- cli: Add --sink option to daemon command ([205f2fc](https://github.com/forkline/swaybeam/commit/205f2fca20172b8b3879dbd86736a538b6b0c57c))
 - external: Add virtual monitor support for Miracast streaming ([38a39b1](https://github.com/forkline/swaybeam/commit/38a39b1018a9abc4a150f6a0bc7d9a5d596ac40e))
+## [v0.3.0](https://github.com/forkline/swaybeam/tree/v0.3.0) - 2026-04-06
+
+### Added
+
+- audio: Add virtual audio sink for TV streaming with --audio flag ([4ed0c15](https://github.com/forkline/swaybeam/commit/4ed0c15eaf4f5cf15f849140d1cae959b253802b))
+- stream: Add audio capture support with optional --no-audio flag ([1504a0f](https://github.com/forkline/swaybeam/commit/1504a0fd85e0c6a2ac0bbee9c780c406575aa004))
+- Add codec selection with H.264/H.265 hardware encoding support ([d38c617](https://github.com/forkline/swaybeam/commit/d38c6170801e960cb547ba81485f1aba82514b74))
+
+### Fixed
+
+- audio: Add better error handling for virtual audio sink ([8da944b](https://github.com/forkline/swaybeam/commit/8da944bcff6bd6b39d7329697a50d2d3736a2e55))
+- cli: Disable H.265 codec options pending HDCP implementation ([e320175](https://github.com/forkline/swaybeam/commit/e320175509dc3111826cf0a5e244ff46ce573169))
+## [v0.2.0](https://github.com/forkline/swaybeam/tree/v0.2.0) - 2026-04-05
+
+### Added
+
+- cli: Add --sink option to daemon command ([205f2fc](https://github.com/forkline/swaybeam/commit/205f2fca20172b8b3879dbd86736a538b6b0c57c))
 - hdcp: Implement locality check phase with Kd derivation ([14d01b4](https://github.com/forkline/swaybeam/commit/14d01b4e251376dcfff3966b065f7a6674dbb60c))
 - hdcp: Implement HDCP 2.2/2.3 IV construction with r_rx ([fb62606](https://github.com/forkline/swaybeam/commit/fb626064c47ead8a9665705a4f65a64bbd8a08f8))
 - stream: Switch pipeline to MPEG-TS over RTP for Miracast compatibility ([626ff24](https://github.com/forkline/swaybeam/commit/626ff24b11684e4d98cb2fe13ddfb9269e3e94fe))
-- stream: Add audio capture support with optional --no-audio flag ([1504a0f](https://github.com/forkline/swaybeam/commit/1504a0fd85e0c6a2ac0bbee9c780c406575aa004))
 - Add test pattern streaming and IP discovery ([a52274e](https://github.com/forkline/swaybeam/commit/a52274e0ef7226be85667137d82b6597e328bfd4))
 - Add RTSP debug server and test script ([e4853d5](https://github.com/forkline/swaybeam/commit/e4853d52e5ec195092782ff132eb98a87a8e48eb))
 - Add RTSP client mode and WFD port parsing ([2c3b933](https://github.com/forkline/swaybeam/commit/2c3b9333293b76a8a3716fdc84e5fa3b922b78de))
 - Add Wireshark/tcpdump capture scripts and complete HDCP AKE_No_Stored_km ([a14994b](https://github.com/forkline/swaybeam/commit/a14994b9e45d610a6d1dd561e4c9c2960133cb55))
 - Add protocol-debug skill for packet capture debugging ([3c8e5da](https://github.com/forkline/swaybeam/commit/3c8e5da4bbc1679888c8868e46c112bb8c8670df))
 - Replace test pattern with real PipeWire screen capture ([578a874](https://github.com/forkline/swaybeam/commit/578a8747f4ab4c2e5badb9a84a36ae9c30bd9a05))
-- Add codec selection with H.264/H.265 hardware encoding support ([d38c617](https://github.com/forkline/swaybeam/commit/d38c6170801e960cb547ba81485f1aba82514b74))
 
 ### Fixed
 
-- audio: Add better error handling for virtual audio sink ([8da944b](https://github.com/forkline/swaybeam/commit/8da944bcff6bd6b39d7329697a50d2d3736a2e55))
 - capture: Keep D-Bus connection alive to maintain portal session ([c5a4f4a](https://github.com/forkline/swaybeam/commit/c5a4f4a18df7ae15c8955c09b2df2749bcf5aa4b))
-- cli: Disable H.265 codec options pending HDCP implementation ([e320175](https://github.com/forkline/swaybeam/commit/e320175509dc3111826cf0a5e244ff46ce573169))
 - daemon: Start RTSP server and keep streaming active ([a2ca5f7](https://github.com/forkline/swaybeam/commit/a2ca5f7adf091e05e1954ef2a682579c2fd6e606))
 - hdcp: Send AKE_Transmitter_Info after cert, use version=3 ([85a0ec4](https://github.com/forkline/swaybeam/commit/85a0ec4f07d2e2a05fe3adab0d9db90404109d29))
 - net: Correct NetworkManager WiFi P2P integration ([eb9b83e](https://github.com/forkline/swaybeam/commit/eb9b83e2f7acb8f0ff1a9c3d3af96be913207fe8))
@@ -58,7 +74,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Match Android/WFD spec for Miracast compatibility ([82de3a2](https://github.com/forkline/swaybeam/commit/82de3a2738eb06cd174125c1ce3cb32a32d14e10))
 - Match gnome-network-displays WFD IE format ([ff51faf](https://github.com/forkline/swaybeam/commit/ff51fafca03a02bbaa90b2c88ece7a5d1144d485))
 - Correct WFD IE Device Info field - was 2 bytes, should be 1 byte ([1a612ca](https://github.com/forkline/swaybeam/commit/1a612ca332920231d95e5ff7868f7da4ff672d13))
-- Correct changelog generation and add missing tags ([e49abf3](https://github.com/forkline/swaybeam/commit/e49abf3ef6b6c11bed814598e650de9df63b8cf4))
 
 ### Documentation
 
