@@ -153,9 +153,9 @@ release-tarball: build
 # Full release preparation
 release: lint test build release-tarball
 
-# Update changelog
+# Update changelog with version from Cargo.toml
 update-changelog:
-    git-cliff --config cliff.toml -o CHANGELOG.md
+    git-cliff --config cliff.toml --unreleased --tag v{{PROJECT_VERSION}} -o CHANGELOG.md
 
 # Update version references and Cargo.lock
 update-version:

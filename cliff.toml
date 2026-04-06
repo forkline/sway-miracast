@@ -35,27 +35,13 @@ body = """
     {%- endfor -%}
     {% raw %}\n{% endraw %}\
 {% endfor %}"""
-trim = true
+footer = """
+"""
 
 [git]
 conventional_commits = true
-filter_unconventional = false
+filter_unconventional = true
 split_commits = false
-commit_preprocessors = [
-    # Transform GitHub squash PR titles
-    { pattern = "^Feat/", replace = "feat: " },
-    { pattern = "^Fix/", replace = "fix: " },
-    { pattern = "^Chore/", replace = "chore: " },
-    { pattern = "^Docs/", replace = "docs: " },
-    { pattern = "^Refactor/", replace = "refactor: " },
-    { pattern = "^Style/", replace = "style: " },
-    { pattern = "^Test/", replace = "test: " },
-    { pattern = "^Perf/", replace = "perf: " },
-    { pattern = "^Build/", replace = "build: " },
-    { pattern = "^Ci/", replace = "ci: " },
-    # Strip PR number and body from squash commits
-    { pattern = " \\(#\\d+\\).*", replace = "" },
-]
 commit_parsers = [
     { message = "^feat", group = "<!-- 0 -->Added" },
     { message = "^fix", group = "<!-- 1 -->Fixed" },
@@ -66,13 +52,7 @@ commit_parsers = [
     { message = "^style", group = "Styling" },
     { message = "^test", group = "Testing" },
     { message = "^chore", group = "Chore" },
-    { message = "^[Ff]eat/", group = "<!-- 0 -->Added" },
-    { message = "^[Ff]ix/", group = "<!-- 1 -->Fixed" },
-    { message = "^[Dd]ocs/", group = "<!-- 2 -->Documentation" },
-    { message = "^[Bb]uild/", group = "Build" },
-    { message = "^[Rr]efactor/", group = "Refactor" },
-    { message = "^[Tt]est/", group = "Testing" },
-    { message = "^[Cc]hore/", group = "Chore" },
+    { message = "^debug", group = "Debug" },
 ]
 protect_breaking_commits = false
 filter_commits = false
