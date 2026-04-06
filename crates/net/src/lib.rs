@@ -818,14 +818,7 @@ impl P2pManager {
 
                     if let Ok(addresses) = ip4_config.addresses().await {
                         if let Some((addr, _, _)) = addresses.first() {
-                            let ip = u32::from_be(*addr);
-                            return Ok(format!(
-                                "{}.{}.{}.{}",
-                                (ip >> 24) & 0xFF,
-                                (ip >> 16) & 0xFF,
-                                (ip >> 8) & 0xFF,
-                                ip & 0xFF
-                            ));
+                            return Ok(format_ipv4(u32::from_be(*addr)));
                         }
                     }
                 }
@@ -865,14 +858,7 @@ impl P2pManager {
 
                     if let Ok(addresses) = ip4_config.addresses().await {
                         if let Some((addr, _, _)) = addresses.first() {
-                            let ip = u32::from_be(*addr);
-                            let ip_str = format!(
-                                "{}.{}.{}.{}",
-                                (ip >> 24) & 0xFF,
-                                (ip >> 16) & 0xFF,
-                                (ip >> 8) & 0xFF,
-                                ip & 0xFF
-                            );
+                            let ip_str = format_ipv4(u32::from_be(*addr));
                             tracing::debug!("Got IP from active connection: {}", ip_str);
                             return Ok(ip_str);
                         }
@@ -981,6 +967,16 @@ impl P2pConnection {
     pub fn get_interface(&self) -> &str {
         &self.interface
     }
+}
+
+fn format_ipv4(addr: u32) -> String {
+    format!(
+        "{}.{}.{}.{}",
+        (addr >> 24) & 0xFF,
+        (addr >> 16) & 0xFF,
+        (addr >> 8) & 0xFF,
+        addr & 0xFF
+    )
 }
 
 fn is_miracast_sink(wfd_ies: &[u8]) -> bool {
@@ -1179,6 +1175,14 @@ mod tests {
         let rtsp_port_high = 0x1C; // 0x1C = 28
         let rtsp_port_low = 0x44; // 0x44 = 68
         let rtsp_port_value = ((rtsp_port_high as u16) << 8) | (rtsp_port_low as u16);
-        assert_eq!(rtsp_port_value, 7236); // Should equal RTSP port 7236 (0x1C44)
+        assert_eq!(rtsp_port_value, 7236);
+    }
+
+    #[test]
+    fn test_format_ipv4() {
+        assert_eq!(format_ipv4(0xC0A80101), "192.168.1.1");
+        assert_eq!(format_ipv4(0x7F000001), "127.0.0.1");
+        assert_eq!(format_ipv4(0x00000000), "0.0.0.0");
+        assert_eq!(format_ipv4(0xFFFFFFFF), "255.255.255.255");
     }
 }
