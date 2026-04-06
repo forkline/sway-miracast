@@ -127,15 +127,20 @@ This command:
 
 ### Step 6: Update Changelog
 
-Generate the changelog using git-cliff:
+Generate the changelog using git-cliff with the version from Cargo.toml:
 
 ```bash
 just update-changelog
 ```
 
-This runs: `git-cliff --config cliff.toml -o CHANGELOG.md`
+This runs: `git-cliff --config cliff.toml --unreleased --tag v<VERSION> -o CHANGELOG.md`
 
-The changelog will be automatically updated with commits since the last release, grouped by type.
+The changelog will be automatically updated with:
+- A new versioned section for the current version
+- All commits since the last tag, grouped by type (Added, Fixed, Documentation, etc.)
+- Previous version history preserved (v0.1.2, v0.1.1, etc.)
+
+**Important**: The `--unreleased --tag v<VERSION>` flags ensure the changelog shows the proper version instead of `[unreleased]`.
 
 ### Step 7: Commit Changes
 
