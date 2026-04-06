@@ -43,7 +43,7 @@ The TV never connects to RTSP port 7236 during this window.
 The TV disconnects because:
 1. **RTSP not contacted**: TV doesn't connect to port 7236
 2. **Timing**: Connection only lasts 1-2 seconds
-3. **Possible TV expectations**: 
+3. **Possible TV expectations**:
    - TV may need to be in specific mode BEFORE connection
    - TV may be checking something during P2P discovery
    - TV may expect different WFD capabilities

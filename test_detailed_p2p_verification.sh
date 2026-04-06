@@ -36,7 +36,7 @@ if [ -f "crates/net/src/lib.rs" ]; then
     echo "Found crate implementation - checking WFD IE construction:"
     grep -A 15 -B 5 "WFD.*Device.*Information\|wfd.*ies" crates/net/src/lib.rs
     grep -A 10 -B 10 "1C.*44" crates/net/src/lib.rs  # Looking for 7236 in hex (1C44)
-else 
+else
     echo "Cannot locate swaybeam net crate implementation"
 fi
 echo
@@ -65,19 +65,19 @@ current_con_name=$(nmcli -t -f NAME,DEVICE connection show --active | grep "$p2p
 if [ -n "$current_con_name" ]; then
     echo "Found active P2P connection: $current_con_name"
     echo "This is likely from testing - attempting cleanup before verification test..."
-    
+
     # First, let's just examine it rather than disconnecting
     echo "Connection detail:"
     nmcli connection show "$current_con_name" | grep -i p2p -A 5 -B 5
-    
+
     # Now try to understand its WFD IEs
     p2p_details=$(nmcli connection show "$current_con_name") || true
-    
+
     echo "WFD IEs in current connection:"
     echo "$p2p_details" | grep -i "wfd\-ies\|wifi-p2p\.\*wfd\|p2p.*ies" -A 3 -B 3 || echo "No explicit WFD IEs in this connection"
 else
     echo "No active P2P connection - can start new discovery test"
-    
+
     # Create temporary test connection similar to our code
     temp_conn="temp-test-$((RANDOM % 1000))"
     echo "Creating temporary P2P discovery test connection: $temp_conn"
@@ -85,16 +85,16 @@ else
     nmcli connection add type wifi-p2p con-name "$temp_conn" \
         peer "AA:BB:CC:DD:EE:FF" \
         wifi-p2p.wfd-ies "000006011C440000" 2>/dev/null || echo "Could not create temp test (no peer visible)"
-        
+
     # Show the connection we created (with WFD IEs)
     # nmcli connection show "$temp_conn" 2>/dev/null | grep -A 10 "wifi-p2p" || echo "Temp connection created but invisible or not applicable"
-    
+
     # Clean up
     nmcli connection delete "$temp_conn" 2>/dev/null || true
 fi
 echo
 
-# Final status summary  
+# Final status summary
 echo "=== FINAL STATUS ==="
 echo "✓ P2P Device '$p2p_device' exists"
 echo "✓ WFD IEs correctly implemented as 000006011C440000 (source, port 7236)"

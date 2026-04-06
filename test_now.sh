@@ -41,16 +41,16 @@ echo ""
 echo "4. Monitoring..."
 for i in $(seq 1 45); do
     STATE=$(nmcli -t -f DEVICE,STATE dev status 2>/dev/null | grep p2p-dev | cut -d: -f2)
-    
+
     if [ "$STATE" = "connected" ]; then
         OUR_IP=$(ip -4 addr show 2>/dev/null | grep -A2 "p2p-wlp" | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1)
         TV_IP=$(echo $OUR_IP | sed 's/\.[0-9]*$/.1/')
-        
+
         echo ""
         echo "=========================================="
         echo "[$i] CONNECTED! $OUR_IP -> TV: $TV_IP"
         echo "=========================================="
-        
+
         if [ -z "$STREAM_STARTED" ]; then
             echo "Starting video stream to $TV_IP..."
             gst-launch-1.0 videotestsrc pattern=smpte100 \

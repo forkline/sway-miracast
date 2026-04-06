@@ -55,14 +55,14 @@ OUR_IP=""
 
 for i in {1..60}; do
     STATE=$(nmcli -t -f DEVICE,STATE device status 2>/dev/null | grep p2p-dev | cut -d: -f2)
-    
+
     if [ "$STATE" = "connected" ]; then
         # Get IP addresses
         OUR_IP=$(ip -4 addr show 2>/dev/null | grep -A2 "p2p-wlp" | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1)
         if [ -n "$OUR_IP" ]; then
             TV_IP=$(echo $OUR_IP | sed 's/\.[0-9]*$/.1/')
         fi
-        
+
         if [ -z "$STARTED_STREAM" ] && [ -n "$TV_IP" ]; then
             echo ""
             echo "   P2P CONNECTED!"
@@ -70,7 +70,7 @@ for i in {1..60}; do
             echo "   TV IP: $TV_IP"
             echo ""
             echo "6. Starting video stream to $TV_IP:5004..."
-            
+
             gst-launch-1.0 \
                 videotestsrc pattern=smpte100 ! \
                 "video/x-raw,format=I420,width=1920,height=1080,framerate=30/1" ! \
@@ -78,7 +78,7 @@ for i in {1..60}; do
                 "video/x-h264,profile=constrained-baseline,stream-format=byte-stream" ! \
                 rtph264pay pt=96 ! \
                 udpsink host=$TV_IP port=5004 sync=false async=false 2>&1 &
-            
+
             STREAM_PID=$!
             STARTED_STREAM=1
             echo "   Stream PID: $STREAM_PID"
@@ -88,7 +88,7 @@ for i in {1..60}; do
         echo "   P2P DISCONNECTED after $i seconds"
         break
     fi
-    
+
     sleep 1
 done
 
