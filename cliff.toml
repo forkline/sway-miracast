@@ -34,12 +34,8 @@ body = """
         {%- endif -%}
     {%- endfor -%}
     {% raw %}\n{% endraw %}\
-{% endfor %}\n
-"""
+{% endfor %}"""
 trim = true
-footer = """
-
-"""
 
 [git]
 conventional_commits = true
