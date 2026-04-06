@@ -14,9 +14,6 @@ just update-version
 
 just update-changelog
 
-# Ensure CHANGELOG has trailing newline
-sed -i -e '$a\' CHANGELOG.md
-
 git add .
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ./Cargo.toml | head -n1)
 git commit -m "release: Version $VERSION"

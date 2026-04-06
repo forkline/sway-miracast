@@ -27,6 +27,7 @@ mod session_simulation {
             extend_mode: false,
             enable_audio: true,
             video_codec: None,
+            external_resolution: None,
         };
 
         let daemon = Daemon::with_config(config);

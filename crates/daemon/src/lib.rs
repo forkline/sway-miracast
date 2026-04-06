@@ -2,6 +2,7 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
 use swaybeam_audio::VirtualAudioSink;
+use swaybeam_external::{ExternalResolution, VirtualOutput};
 
 use aes::Aes128;
 use ctr::cipher::{KeyIvInit, StreamCipher};
@@ -45,6 +46,7 @@ pub struct DaemonConfig {
     pub extend_mode: bool,
     pub enable_audio: bool,
     pub video_codec: Option<VideoCodec>,
+    pub external_resolution: Option<ExternalResolution>,
 }
 
 impl Default for DaemonConfig {
@@ -61,6 +63,7 @@ impl Default for DaemonConfig {
             extend_mode: false,
             enable_audio: false,
             video_codec: None,
+            external_resolution: None,
         }
     }
 }
@@ -74,8 +77,7 @@ pub struct Daemon {
     hdcp_stream: Option<TcpStream>,
     connection: Option<P2pConnection>,
     rtsp_server: Option<RtspServer>,
-    virtual_output_name: Option<String>,
-    original_portal_config: Option<String>,
+    virtual_output: Option<VirtualOutput>,
     event_tx: mpsc::UnboundedSender<DaemonEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<DaemonEvent>>,
     audio_sink: Option<VirtualAudioSink>,
@@ -139,8 +141,7 @@ impl Daemon {
             hdcp_stream: None,
             connection: None,
             rtsp_server: None,
-            virtual_output_name: None,
-            original_portal_config: None,
+            virtual_output: None,
             event_tx,
             event_rx: Some(event_rx),
             audio_sink: None,
@@ -177,15 +178,34 @@ impl Daemon {
         self.connect(sink).await?;
 
         if self.config.extend_mode {
-            let output_name = self.setup_virtual_output()?;
+            let output =
+                tokio::task::block_in_place(|| VirtualOutput::create(ExternalResolution::FourK))
+                    .map_err(|e| anyhow::anyhow!("Failed to create virtual output: {}", e))?;
             info!(
                 "Virtual output '{}' configured for 4K extend mode",
-                output_name
+                output.output_name()
             );
             self.config.video_width = 3840;
             self.config.video_height = 2160;
             self.config.video_bitrate = 20_000_000;
             self.config.video_framerate = 30;
+            self.virtual_output = Some(output);
+        } else if let Some(resolution) = self.config.external_resolution {
+            let output = tokio::task::block_in_place(|| VirtualOutput::create(resolution))
+                .map_err(|e| anyhow::anyhow!("Failed to create virtual output: {}", e))?;
+            info!(
+                "Virtual output '{}' configured for external monitor ({})",
+                output.output_name(),
+                resolution.mode_string()
+            );
+            self.config.video_width = resolution.width();
+            self.config.video_height = resolution.height();
+            self.config.video_bitrate = if resolution == ExternalResolution::FourK {
+                20_000_000
+            } else {
+                8_000_000
+            };
+            self.virtual_output = Some(output);
         }
 
         if self.config.enable_audio {
@@ -204,6 +224,9 @@ impl Daemon {
 
         *self.state.write() = DaemonState::Streaming;
         if self.stream.read().await.is_none() {
+            if self.virtual_output.is_some() {
+                println!("Please approve the screen sharing dialog for the virtual monitor...");
+            }
             self.start_stream().await?;
         }
 
@@ -212,7 +235,15 @@ impl Daemon {
 
         self.stop_stream().await.ok();
         self.disconnect().await.ok();
-        self.cleanup_virtual_output();
+
+        if let Some(ref mut output) = self.virtual_output {
+            info!("Cleaning up virtual output...");
+            output
+                .cleanup()
+                .map_err(|e| tracing::warn!("Failed to cleanup virtual output: {}", e))
+                .ok();
+        }
+        self.virtual_output = None;
 
         if let Some(ref mut audio_sink) = self.audio_sink {
             info!("Cleaning up virtual audio sink...");
@@ -1656,116 +1687,6 @@ impl Daemon {
         *self.stream.write().await = Some(pipeline);
         *self.state.write() = DaemonState::Streaming;
         Ok(())
-    }
-
-    fn setup_virtual_output(&mut self) -> anyhow::Result<String> {
-        let output = tokio::task::block_in_place(|| {
-            let out = std::process::Command::new("swaymsg")
-                .arg("create_output")
-                .output()
-                .map_err(|e| anyhow::anyhow!("Failed to run swaymsg create_output: {}", e))?;
-            if !out.status.success() {
-                anyhow::bail!(
-                    "swaymsg create_output failed: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                );
-            }
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let name = stdout.trim().trim_matches('"').to_string();
-            if name.is_empty() {
-                anyhow::bail!("swaymsg create_output returned empty output name");
-            }
-            Ok::<String, anyhow::Error>(name)
-        })?;
-
-        info!("Created virtual output: {}", output);
-
-        tokio::task::block_in_place(|| {
-            std::process::Command::new("swaymsg")
-                .args(["output", &output, "mode", "3840x2160@60Hz"])
-                .status()
-                .map_err(|e| anyhow::anyhow!("Failed to set output mode: {}", e))?;
-            Ok::<(), anyhow::Error>(())
-        })?;
-
-        tokio::task::block_in_place(|| {
-            std::process::Command::new("swaymsg")
-                .args(["output", &output, "pos", "1920 0"])
-                .status()
-                .map_err(|e| anyhow::anyhow!("Failed to set output position: {}", e))?;
-            Ok::<(), anyhow::Error>(())
-        })?;
-
-        let portal_config_path = std::path::PathBuf::from(format!(
-            "{}/.config/xdg-desktop-portal-wlr/config",
-            std::env::var("HOME").unwrap_or_else(|_| "/home/agil".to_string())
-        ));
-
-        let original_config = std::fs::read_to_string(&portal_config_path).ok();
-        self.original_portal_config = original_config.clone();
-
-        let new_config = match &original_config {
-            Some(config) => {
-                let mut in_screencast = false;
-                let mut found_output = false;
-                let lines: Vec<String> = config
-                    .lines()
-                    .map(|line| {
-                        if line.trim() == "[screencast]" {
-                            in_screencast = true;
-                        } else if line.starts_with('[') {
-                            in_screencast = false;
-                        }
-                        if in_screencast && line.starts_with("output_name=") {
-                            found_output = true;
-                            format!("output_name={}", output)
-                        } else {
-                            line.to_string()
-                        }
-                    })
-                    .collect();
-                if !found_output {
-                    let mut result = lines;
-                    if !in_screencast {
-                        result.push("[screencast]".to_string());
-                    }
-                    result.push(format!("output_name={}", output));
-                    result.join("\n")
-                } else {
-                    lines.join("\n")
-                }
-            }
-            None => format!(
-                "[screencast]\noutput_name={}\nmax_fps=30\nchooser_type=simple\n",
-                output
-            ),
-        };
-
-        std::fs::write(&portal_config_path, &new_config)?;
-        info!("Updated portal-wlr config to capture {}", output);
-
-        self.virtual_output_name = Some(output.clone());
-        Ok(output)
-    }
-
-    fn cleanup_virtual_output(&mut self) {
-        if let Some(ref name) = self.virtual_output_name.take() {
-            info!("Cleaning up virtual output: {}", name);
-            tokio::task::block_in_place(|| {
-                let _ = std::process::Command::new("swaymsg")
-                    .args(["output", name, "disable"])
-                    .status();
-            });
-        }
-
-        if let Some(ref config) = self.original_portal_config.take() {
-            let portal_config_path = std::path::PathBuf::from(format!(
-                "{}/.config/xdg-desktop-portal-wlr/config",
-                std::env::var("HOME").unwrap_or_else(|_| "/home/agil".to_string())
-            ));
-            let _ = std::fs::write(&portal_config_path, config);
-            info!("Restored original portal-wlr config");
-        }
     }
 }
 

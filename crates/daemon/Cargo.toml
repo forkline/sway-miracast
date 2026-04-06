@@ -10,6 +10,7 @@ swaybeam-stream = { path = "../stream" }
 swaybeam-net = { path = "../net" }
 swaybeam-rtsp = { path = "../rtsp" }
 swaybeam-audio = { path = "../audio" }
+swaybeam-external = { path = "../external" }
 anyhow.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time", "signal"] }

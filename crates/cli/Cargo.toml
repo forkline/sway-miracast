@@ -26,6 +26,7 @@ swaybeam-rtsp = { path = "../rtsp" }
 swaybeam-doctor = { path = "../doctor" }
 swaybeam-capture = { path = "../capture" }
 swaybeam-stream = { path = "../stream" }
+swaybeam-external = { path = "../external" }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

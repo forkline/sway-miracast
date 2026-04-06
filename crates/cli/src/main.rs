@@ -22,8 +22,17 @@ pub enum CodecChoice {
     Auto,
     H264,
     H264Sw,
-    // H265 - Disabled: requires HDCP 2.x for LG TVs (not yet implemented)
-    // H265Sw - Disabled: requires HDCP 2.x for LG TVs (not yet implemented)
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum ExternalResolutionChoice {
+    Auto,
+    #[value(name = "4k")]
+    FourK,
+    #[value(name = "1080")]
+    TenEighty,
+    #[value(name = "720")]
+    SevenTwenty,
 }
 
 #[derive(Subcommand)]
@@ -57,6 +66,8 @@ enum Command {
         audio: bool,
         #[arg(long, value_enum, default_value = "auto")]
         codec: CodecChoice,
+        #[arg(long, value_enum)]
+        external: Option<ExternalResolutionChoice>,
     },
     Status,
 }
@@ -93,6 +104,7 @@ async fn main() -> Result<()> {
             extend,
             audio,
             codec,
+            external,
         } => {
             daemon_command(
                 sink.clone(),
@@ -100,6 +112,7 @@ async fn main() -> Result<()> {
                 *extend,
                 *audio,
                 codec.clone(),
+                external.clone(),
                 cli.json,
             )
             .await
@@ -295,9 +308,11 @@ async fn daemon_command(
     extend_mode: bool,
     audio: bool,
     codec: CodecChoice,
+    external: Option<ExternalResolutionChoice>,
     _json_output: bool,
 ) -> Result<()> {
     use swaybeam_daemon::{Daemon, DaemonConfig};
+    use swaybeam_external::ExternalResolution;
     use swaybeam_stream::VideoCodec;
 
     println!("Starting Miracast daemon...");
@@ -310,15 +325,28 @@ async fn daemon_command(
     if audio {
         println!("Audio enabled - virtual sink will be created");
     }
+    if let Some(ref ext) = external {
+        let resolution_str = match ext {
+            ExternalResolutionChoice::Auto => "auto",
+            ExternalResolutionChoice::FourK => "4K",
+            ExternalResolutionChoice::TenEighty => "1080p",
+            ExternalResolutionChoice::SevenTwenty => "720p",
+        };
+        println!("External monitor enabled - resolution: {}", resolution_str);
+    }
 
     let video_codec = match codec {
         CodecChoice::Auto => None,
         CodecChoice::H264 => Some(VideoCodec::H264Hardware),
         CodecChoice::H264Sw => Some(VideoCodec::H264),
-        // H265 options disabled: requires HDCP 2.x implementation
-        // CodecChoice::H265 => Some(VideoCodec::H265Hardware),
-        // CodecChoice::H265Sw => Some(VideoCodec::H265),
     };
+
+    let external_resolution = external.map(|e| match e {
+        ExternalResolutionChoice::Auto => ExternalResolution::Auto,
+        ExternalResolutionChoice::FourK => ExternalResolution::FourK,
+        ExternalResolutionChoice::TenEighty => ExternalResolution::TenEighty,
+        ExternalResolutionChoice::SevenTwenty => ExternalResolution::SevenTwenty,
+    });
 
     let config = DaemonConfig {
         preferred_sink: sink,
@@ -326,6 +354,7 @@ async fn daemon_command(
         extend_mode,
         enable_audio: audio,
         video_codec,
+        external_resolution,
         ..Default::default()
     };
     let mut daemon = Daemon::with_config(config);

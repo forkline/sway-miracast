@@ -8,6 +8,7 @@ members = [
     "crates/daemon",
     "crates/cli",
     "crates/audio",
+    "crates/external",
 ]
 resolver = "2"
 
