@@ -9,6 +9,7 @@ swaybeam-capture = { path = "../capture", features = ["real_portal"] }
 swaybeam-stream = { path = "../stream" }
 swaybeam-net = { path = "../net" }
 swaybeam-rtsp = { path = "../rtsp" }
+swaybeam-audio = { path = "../audio" }
 anyhow.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time", "signal"] }

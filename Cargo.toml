@@ -7,6 +7,7 @@ members = [
     "crates/rtsp",
     "crates/daemon",
     "crates/cli",
+    "crates/audio",
 ]
 resolver = "2"
 

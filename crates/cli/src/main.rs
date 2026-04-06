@@ -54,7 +54,7 @@ enum Command {
         #[arg(long)]
         extend: bool,
         #[arg(long)]
-        no_audio: bool,
+        audio: bool,
         #[arg(long, value_enum, default_value = "auto")]
         codec: CodecChoice,
     },
@@ -91,14 +91,14 @@ async fn main() -> Result<()> {
             sink,
             client,
             extend,
-            no_audio,
+            audio,
             codec,
         } => {
             daemon_command(
                 sink.clone(),
                 *client,
                 *extend,
-                !no_audio,
+                *audio,
                 codec.clone(),
                 cli.json,
             )
@@ -307,8 +307,8 @@ async fn daemon_command(
     if extend_mode {
         println!("Running in extend mode (4K virtual output)");
     }
-    if !audio {
-        println!("Audio disabled");
+    if audio {
+        println!("Audio enabled - virtual sink will be created");
     }
 
     let video_codec = match codec {

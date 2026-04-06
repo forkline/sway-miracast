@@ -883,24 +883,6 @@ impl StreamPipeline {
         })
     }
 
-    pub fn get_default_audio_monitor() -> Option<String> {
-        let output = std::process::Command::new("pactl")
-            .args(["get-default-sink"])
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            return None;
-        }
-
-        let sink = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if sink.is_empty() {
-            return None;
-        }
-
-        Some(format!("{}.monitor", sink))
-    }
-
     pub fn is_hardware_encoder_available(codec: &VideoCodec) -> bool {
         let encoder_name = match codec {
             VideoCodec::H264 | VideoCodec::H264Hardware => "vah264enc",
@@ -1016,7 +998,8 @@ mod tests {
 
     #[test]
     fn test_video_codec_display() {
-        assert_eq!(VideoCodec::H264.to_string(), "H264");
+        assert_eq!(VideoCodec::H264.to_string(), "H264 (software)");
+        assert_eq!(VideoCodec::H264Hardware.to_string(), "H264 (hardware)");
     }
 
     #[test]

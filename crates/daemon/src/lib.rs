@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
+use swaybeam_audio::VirtualAudioSink;
 
 use aes::Aes128;
 use ctr::cipher::{KeyIvInit, StreamCipher};
@@ -58,7 +59,7 @@ impl Default for DaemonConfig {
             preferred_sink: None,
             force_client_mode: false,
             extend_mode: false,
-            enable_audio: true,
+            enable_audio: false,
             video_codec: None,
         }
     }
@@ -77,6 +78,7 @@ pub struct Daemon {
     original_portal_config: Option<String>,
     event_tx: mpsc::UnboundedSender<DaemonEvent>,
     event_rx: Option<mpsc::UnboundedReceiver<DaemonEvent>>,
+    audio_sink: Option<VirtualAudioSink>,
 }
 
 #[derive(Debug)]
@@ -141,6 +143,7 @@ impl Daemon {
             original_portal_config: None,
             event_tx,
             event_rx: Some(event_rx),
+            audio_sink: None,
         }
     }
 
@@ -185,6 +188,17 @@ impl Daemon {
             self.config.video_framerate = 30;
         }
 
+        if self.config.enable_audio {
+            info!("Creating virtual audio sink for audio routing...");
+            let audio_sink = VirtualAudioSink::create()
+                .map_err(|e| anyhow::anyhow!("Failed to create virtual audio sink: {}", e))?;
+            info!(
+                "Virtual audio sink '{}' created and set as default",
+                audio_sink.sink_name()
+            );
+            self.audio_sink = Some(audio_sink);
+        }
+
         *self.state.write() = DaemonState::Negotiating;
         self.negotiate().await?;
 
@@ -199,6 +213,15 @@ impl Daemon {
         self.stop_stream().await.ok();
         self.disconnect().await.ok();
         self.cleanup_virtual_output();
+
+        if let Some(ref mut audio_sink) = self.audio_sink {
+            info!("Cleaning up virtual audio sink...");
+            audio_sink
+                .cleanup()
+                .map_err(|e| tracing::warn!("Failed to cleanup audio sink: {}", e))
+                .ok();
+        }
+        self.audio_sink = None;
 
         info!("Daemon stopped");
         *self.state.write() = DaemonState::Idle;
@@ -1607,7 +1630,7 @@ impl Daemon {
         let pw_stream = capture.start().await?;
 
         let audio_monitor = if self.config.enable_audio {
-            StreamPipeline::get_default_audio_monitor()
+            self.audio_sink.as_ref().map(|s| s.monitor_device())
         } else {
             None
         };
