@@ -13,7 +13,7 @@ use sha1::Sha1;
 use sha2::Sha256;
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use swaybeam_capture::{Capture, CaptureConfig};
 use swaybeam_doctor::{check_all, Report as DoctorReport};
@@ -1630,7 +1630,12 @@ impl Daemon {
         let pw_stream = capture.start().await?;
 
         let audio_monitor = if self.config.enable_audio {
-            self.audio_sink.as_ref().map(|s| s.monitor_device())
+            if let Some(ref audio_sink) = self.audio_sink {
+                Some(audio_sink.monitor_device())
+            } else {
+                warn!("Audio enabled but virtual sink not available, disabling audio");
+                None
+            }
         } else {
             None
         };
