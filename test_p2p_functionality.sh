@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test script to verify P2P connection works correctly 
+# Test script to verify P2P connection works correctly
 # without relying on the TV (testing P2P advertising, WFD IEs, etc.)
 
 set -e
@@ -32,12 +32,12 @@ if command -v wpa_cli &>/dev/null; then
     wpa_cli_commands=$(wpa_cli -i "$p2p_device" list | head -20)
     echo "   Available wpa_cli commands for device:"
     echo "$wpa_cli_commands" | head -5
-    
+
     # Try starting a limited P2P find (will time out safely after few seconds)
     echo "   Attempting P2P find (this will timeout after few seconds)..."
     timeout 5s wpa_cli -i "$p2p_device" p2p_find 2>&1 || true
     sleep 1
-    
+
     # Stop find
     wpa_cli -i "$p2p_device" p2p_stop_find 2>/dev/null || true
     echo "   ✓ P2P discovery attempted"
@@ -57,12 +57,12 @@ if command -v nmcli &>/dev/null; then
     else
         echo "   $nmcli_p2p_info"
     fi
-    
+
     # List existing P2P peers/connections (should show current state)
     echo
     echo "   Current WiFi devices state:"
     nmcli device wifi list 2>/dev/null || true
-    
+
 else
     echo "   ✗ nmcli not available"
 fi
@@ -106,10 +106,10 @@ echo "7. Checking P2P capabilities via Rust net crate..."
 # Test Rust compilation
 if cargo build --package swaybeam-net 2>/dev/null; then
     echo "   ✓ swaybeam-net crate compiles correctly"
-    
+
     # Show the discovery_and_connect example source to confirm functionality
     echo "   Example can perform P2P discovery for $p2p_device"
-else 
+else
     echo "   ✗ swaybeam-net crate doesn't compile correctly"
 fi
 
@@ -136,7 +136,7 @@ echo "   (Checked in crates/net/src/lib.rs line 360-370 range)"
 
 echo
 echo "# Test Summary"
-echo "✓ P2P Device $p2p_device exists and accessible"  
+echo "✓ P2P Device $p2p_device exists and accessible"
 echo "✓ P2P discovery tools available (nmcli, wpa_cli if enabled)"
 echo "✓ WFD capabilities include RTSP port 7236"
 echo "✓ Rust net crate implements P2P functionality"

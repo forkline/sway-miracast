@@ -11,6 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - audio: Add virtual audio sink for TV streaming with --audio flag ([4ed0c15](https://github.com/forkline/swaybeam/commit/4ed0c15eaf4f5cf15f849140d1cae959b253802b))
 - cli: Add --sink option to daemon command ([205f2fc](https://github.com/forkline/swaybeam/commit/205f2fca20172b8b3879dbd86736a538b6b0c57c))
+- external: Add virtual monitor support for Miracast streaming ([38a39b1](https://github.com/forkline/swaybeam/commit/38a39b1018a9abc4a150f6a0bc7d9a5d596ac40e))
 - hdcp: Implement locality check phase with Kd derivation ([14d01b4](https://github.com/forkline/swaybeam/commit/14d01b4e251376dcfff3966b065f7a6674dbb60c))
 - hdcp: Implement HDCP 2.2/2.3 IV construction with r_rx ([fb62606](https://github.com/forkline/swaybeam/commit/fb626064c47ead8a9665705a4f65a64bbd8a08f8))
 - stream: Switch pipeline to MPEG-TS over RTP for Miracast compatibility ([626ff24](https://github.com/forkline/swaybeam/commit/626ff24b11684e4d98cb2fe13ddfb9269e3e94fe))
