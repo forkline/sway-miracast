@@ -13,6 +13,9 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    #[arg(short, long, global = true, default_value = "wlp2s0")]
+    interface: String,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -92,14 +95,14 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Command::Doctor => doctor_command(cli.json).await,
-        Command::Discover { timeout } => discover_command(*timeout, cli.json).await,
-        Command::Connect { sink } => connect_command(sink, cli.json).await,
+        Command::Discover { timeout } => discover_command(*timeout, cli.json, &cli.interface).await,
+        Command::Connect { sink } => connect_command(sink, cli.json, &cli.interface).await,
         Command::Stream {
             width,
             height,
             framerate,
         } => stream_command(*width, *height, *framerate, cli.json).await,
-        Command::Disconnect => disconnect_command(cli.json).await,
+        Command::Disconnect => disconnect_command(cli.json, &cli.interface).await,
         Command::Daemon {
             sink,
             client,
@@ -116,6 +119,7 @@ async fn main() -> Result<()> {
                 codec.clone(),
                 external.clone(),
                 cli.json,
+                &cli.interface,
             )
             .await
         }
@@ -147,11 +151,11 @@ async fn doctor_command(json_output: bool) -> Result<()> {
     Ok(())
 }
 
-async fn discover_command(timeout: u64, json_output: bool) -> Result<()> {
+async fn discover_command(timeout: u64, json_output: bool, interface: &str) -> Result<()> {
     use swaybeam_net::{P2pConfig, P2pManager};
 
     let config = P2pConfig {
-        interface_name: "wlan0".to_string(),
+        interface_name: interface.to_string(),
         group_name: "swaybeam".to_string(),
     };
 
@@ -193,11 +197,11 @@ async fn discover_command(timeout: u64, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-async fn connect_command(sink_param: &str, json_output: bool) -> Result<()> {
+async fn connect_command(sink_param: &str, json_output: bool, interface: &str) -> Result<()> {
     use swaybeam_net::{P2pConfig, P2pManager};
 
     let config = P2pConfig {
-        interface_name: "wlan0".to_string(),
+        interface_name: interface.to_string(),
         group_name: "swaybeam".to_string(),
     };
 
@@ -279,11 +283,11 @@ async fn stream_command(width: u32, height: u32, framerate: u32, json_output: bo
     Ok(())
 }
 
-async fn disconnect_command(json_output: bool) -> Result<()> {
+async fn disconnect_command(json_output: bool, interface: &str) -> Result<()> {
     use swaybeam_net::{P2pConfig, P2pManager};
 
     let config = P2pConfig {
-        interface_name: "wlan0".to_string(),
+        interface_name: interface.to_string(),
         group_name: "swaybeam".to_string(),
     };
 
@@ -304,6 +308,7 @@ async fn disconnect_command(json_output: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn daemon_command(
     sink: Option<String>,
     client_mode: bool,
@@ -312,6 +317,7 @@ async fn daemon_command(
     codec: CodecChoice,
     external: Option<ExternalResolutionChoice>,
     _json_output: bool,
+    interface: &str,
 ) -> Result<()> {
     use swaybeam_daemon::{Daemon, DaemonConfig};
     use swaybeam_external::ExternalResolution;
@@ -359,6 +365,7 @@ async fn daemon_command(
         enable_audio: audio,
         video_codec,
         external_resolution,
+        interface: interface.to_string(),
         ..Default::default()
     };
     let mut daemon = Daemon::with_config(config);

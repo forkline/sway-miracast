@@ -8,7 +8,7 @@ use aes::Aes128;
 use hmac::{Hmac, Mac};
 use parking_lot::RwLock as PlRwLock;
 use rand::{rngs::OsRng, RngCore};
-use rsa::{BigUint, Oaep, RsaPublicKey};
+use rsa::{BigUint, Oaep, Pkcs1v15Encrypt, RsaPublicKey};
 use sha1::Sha1;
 use sha2::Sha256;
 use tokio::net::{TcpSocket, TcpStream};
@@ -99,7 +99,7 @@ pub enum DaemonEvent {
 struct HdcpReceiverCert {
     repeater: bool,
     receiver_id: [u8; 5],
-    modulus: [u8; 128],
+    modulus: Vec<u8>,
     exponent: [u8; 3],
 }
 
@@ -963,18 +963,75 @@ impl Daemon {
     }
 
     fn parse_hdcp_receiver_cert(message: &[u8]) -> Option<HdcpReceiverCert> {
-        if message.len() < 524 || message.first() != Some(&0x03) {
+        info!(
+            "Parsing HDCP receiver cert: len={}, first byte={:02x}",
+            message.len(),
+            message.first().unwrap_or(&0)
+        );
+
+        if message.first() != Some(&0x03) {
+            tracing::warn!("HDCP cert invalid version byte");
+            return None;
+        }
+
+        if message.len() < 138 {
+            tracing::warn!(
+                "HDCP cert too short: {} bytes (need at least 138 for RSA-1024)",
+                message.len()
+            );
             return None;
         }
 
         let mut receiver_id = [0u8; 5];
         receiver_id.copy_from_slice(&message[2..7]);
 
-        let mut modulus = [0u8; 128];
-        modulus.copy_from_slice(&message[7..135]);
+        let exponent_bytes: [u8; 3] = message[135..138].try_into().ok()?;
+        let exponent_val =
+            u32::from_be_bytes([0, exponent_bytes[0], exponent_bytes[1], exponent_bytes[2]]);
+
+        let (modulus_size, exponent_offset) = if exponent_val == 65537 {
+            (128, 135)
+        } else if message.len() >= 524 {
+            (256, 263)
+        } else {
+            tracing::warn!(
+                "Unknown HDCP certificate format, exponent at 135: {:02x}{:02x}{:02x}",
+                exponent_bytes[0],
+                exponent_bytes[1],
+                exponent_bytes[2]
+            );
+            return None;
+        };
+
+        info!(
+            "HDCP cert detected: RSA-{} (modulus {} bytes, exponent at offset {})",
+            modulus_size * 8,
+            modulus_size,
+            exponent_offset
+        );
+
+        let mut modulus = vec![0u8; modulus_size];
+        modulus.copy_from_slice(&message[7..7 + modulus_size]);
 
         let mut exponent = [0u8; 3];
-        exponent.copy_from_slice(&message[135..138]);
+        exponent.copy_from_slice(&message[exponent_offset..exponent_offset + 3]);
+
+        let modulus_hex: String = modulus.iter().map(|b| format!("{:02x}", b)).collect();
+        info!("HDCP modulus (first 32 bytes): {}...", &modulus_hex[..64]);
+        info!(
+            "HDCP exponent: {:02x}{:02x}{:02x} (= {})",
+            exponent[0],
+            exponent[1],
+            exponent[2],
+            u32::from_be_bytes([0, exponent[0], exponent[1], exponent[2]])
+        );
+
+        let modulus_last_byte = modulus.last().unwrap_or(&0);
+        info!(
+            "HDCP modulus last byte: {:02x} (is_odd: {})",
+            modulus_last_byte,
+            modulus_last_byte & 0x01 != 0
+        );
 
         Some(HdcpReceiverCert {
             repeater: (message[1] & 0x01) != 0,
@@ -992,10 +1049,22 @@ impl Daemon {
         hdcp_stream: &TcpStream,
         cert: &HdcpReceiverCert,
     ) -> Option<[u8; 16]> {
-        let public_key = match RsaPublicKey::new(
-            BigUint::from_bytes_be(&cert.modulus),
-            BigUint::from_bytes_be(&cert.exponent),
-        ) {
+        let modulus_biguint = BigUint::from_bytes_be(&cert.modulus);
+        let exponent_biguint = BigUint::from_bytes_be(&cert.exponent);
+
+        info!("HDCP modulus bit length: {}", modulus_biguint.bits());
+        let modulus_last_byte = cert.modulus.last().unwrap_or(&0);
+        info!(
+            "HDCP modulus last byte: {:02x} (is_odd: {})",
+            modulus_last_byte,
+            modulus_last_byte & 0x01 != 0
+        );
+        info!(
+            "HDCP modulus first byte: {:02x}",
+            cert.modulus.first().unwrap_or(&0)
+        );
+
+        let public_key = match RsaPublicKey::new(modulus_biguint, exponent_biguint) {
             Ok(key) => key,
             Err(err) => {
                 tracing::warn!("Failed to build HDCP receiver public key: {}", err);
@@ -1004,10 +1073,7 @@ impl Daemon {
         };
 
         let modulus_hex: String = cert.modulus.iter().map(|b| format!("{:02x}", b)).collect();
-        info!(
-            "HDCP receiver modulus (first 32 bytes): {}...",
-            &modulus_hex[..64]
-        );
+        info!("HDCP receiver modulus (full): {}", modulus_hex);
         info!(
             "HDCP receiver exponent: {:02x}{:02x}{:02x}",
             cert.exponent[0], cert.exponent[1], cert.exponent[2]
@@ -1019,13 +1085,28 @@ impl Daemon {
         info!("HDCP Km generated: {}", km_hex);
 
         let ekpub_km = match public_key.encrypt(&mut OsRng, Oaep::new::<Sha1>(), &km) {
-            Ok(ciphertext) => ciphertext,
+            Ok(ciphertext) => {
+                info!("HDCP RSA-OAEP encryption successful");
+                ciphertext
+            }
             Err(err) => {
                 tracing::warn!(
-                    "Failed to encrypt HDCP Km with receiver certificate: {}",
+                    "HDCP RSA-OAEP encryption failed: {}, trying PKCS#1 v1.5",
                     err
                 );
-                return None;
+                match public_key.encrypt(&mut OsRng, Pkcs1v15Encrypt, &km) {
+                    Ok(ciphertext) => {
+                        info!("HDCP RSA PKCS#1 v1.5 encryption successful");
+                        ciphertext
+                    }
+                    Err(err2) => {
+                        tracing::warn!(
+                            "Failed to encrypt HDCP Km with both OAEP and PKCS#1 v1.5: {}",
+                            err2
+                        );
+                        return None;
+                    }
+                }
             }
         };
 
@@ -1036,10 +1117,13 @@ impl Daemon {
             &cipher_hex[..32]
         );
 
-        if ekpub_km.len() != 128 {
+        let expected_ciphertext_len = cert.modulus.len();
+        if ekpub_km.len() != expected_ciphertext_len {
             tracing::warn!(
-                "Unexpected HDCP AKE_No_Stored_km ciphertext size: {}",
-                ekpub_km.len()
+                "Unexpected HDCP AKE_No_Stored_km ciphertext size: {} (expected {} for RSA-{})",
+                ekpub_km.len(),
+                expected_ciphertext_len,
+                expected_ciphertext_len * 8
             );
             return None;
         }
@@ -1913,7 +1997,19 @@ impl Daemon {
     fn hdcp_message_length(read_buffer: &[u8]) -> Option<usize> {
         let msg_id = *read_buffer.first()?;
         let message_len = match msg_id {
-            0x03 => 524,
+            0x03 => {
+                if read_buffer.len() < 138 {
+                    return None;
+                }
+                let exponent_bytes: [u8; 3] = read_buffer[135..138].try_into().ok()?;
+                let _exponent_val = u32::from_be_bytes([
+                    0,
+                    exponent_bytes[0],
+                    exponent_bytes[1],
+                    exponent_bytes[2],
+                ]);
+                524
+            }
             0x06 => 9,
             0x07 => 33,
             0x08 => 17,
@@ -1934,16 +2030,20 @@ impl Daemon {
         let msg_id = message[0];
 
         match msg_id {
-            0x03 if message.len() >= 524 => {
+            0x03 if message.len() >= 138 => {
                 let repeater = (message[1] & 0x01) != 0;
                 let receiver_id = message[2..7]
                     .iter()
                     .map(|byte| format!("{:02x}", byte))
                     .collect::<Vec<_>>()
                     .join("");
+                let full_hex: String = message.iter().map(|b| format!("{:02x}", b)).collect();
                 info!(
-                    "Received HDCP AKE_Send_Cert: repeater={}, receiver_id={}, first bytes={}",
-                    repeater, receiver_id, preview
+                    "Received HDCP AKE_Send_Cert: len={}, repeater={}, receiver_id={}, full_hex={}",
+                    message.len(),
+                    repeater,
+                    receiver_id,
+                    full_hex
                 );
             }
             0x06 if message.len() >= 9 => {
