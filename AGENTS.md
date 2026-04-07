@@ -229,30 +229,40 @@ When adding dependencies:
 ### Current Status
 
 - **H.264** works with hardware encoding (`vah264enc`) and software encoding (`x264enc`)
-- **H.265** is negotiated correctly but fails on LG TVs due to HDCP requirement
+- **H.265** HDCP handshake implemented but H_prime verification failing
+- TV may store pairing state expecting AKE_Stored_Km on subsequent connections
 
-### Technical Findings
+### HDCP 2.x Implementation Progress
 
-1. **WFD Format Parsing**
-   - WFD 2.0 H.265 format starts with `02` (codec type)
-   - WFD 1.0/2.0 H.264 format starts with `01` or `40` (SVC)
-   - Legacy format uses codec mask (bit 4 = 0x10 for H.265)
+1. **Handshake Messages Working**
+   - AKE_Init → AKE_Send_Cert → AKE_No_Stored_Km → r_rx → H_prime → Pairing_Info → LC_Init → L_prime → SKE_Send_Eks
+   - Full handshake observed in packet captures
 
-2. **LG TV HDCP Requirement**
-   - LG TVs require HDCP 2.x for H.265 streams
-   - We currently respond with `wfd_content_protection: none`
-   - TV sends TEARDOWN ~20s after PLAY when HDCP is missing for H.265
+2. **Key Findings**
+   - IV construction: `r_tx || r_rx[0..7] || counter` for HDCP 2.2+ (NOT full r_rx)
+   - Counter is in byte 15, XORed with 0x01 for second block
+   - RSA-OAEP with SHA-1, empty label
+   - Kd derivation uses AES-ECB to encrypt IV blocks
 
-3. **H.265 Caps Requirements**
-   - Profile: `main` (required by WFD spec)
-   - Level: `4.1` (1080p60)
-   - Tier: `main`
-   - Stream format: `byte-stream` (Annex B)
+3. **Current Issues**
+   - H_prime mismatch: TV's H_prime doesn't match our computed value
+   - TV stores pairing state after successful handshake, may expect AKE_Stored_Km
+   - TV behavior inconsistent: sometimes sends H_prime, sometimes closes after r_rx
 
-### Implementing HDCP Support
+4. **Key Derivation**
+   - Kd = AES-ECB(Km, r_tx || r_rx[0..7] || 0x00) || AES-ECB(Km, r_tx || r_rx[0..7] || 0x01)
+   - Kd2 for SKE: key = Km XOR (0x00..00 || r_n), IV with counter 0x02
+   - H_prime message format for HDCP 2.2+: r_tx || repeater_bit || receiver_id
 
-To enable H.265 on LG TVs, HDCP 2.x must be implemented:
-1. Parse `wfd_content_protection` from TV (e.g., `HDCP2.1 port=53004`)
-2. Implement HDCP 2.x handshake over the specified port
-3. Encrypt video/audio streams with session keys
-4. This is a significant undertaking requiring cryptographic implementation
+### Files to Review
+
+- `crates/daemon/src/lib.rs` lines 1250-1345 for cryptographic functions
+- `crates/stream/src/lib.rs` lines 793-870 for encryption setup
+- `docs/HDCP_TEST_VECTORS.md` for test vectors
+
+### Next Steps
+
+1. Debug H_prime mismatch - verify HMAC message format matches HDCP 2.2 spec
+2. Implement AKE_Stored_Km for subsequent connections after pairing
+3. Store Km securely for reuse with same TV
+4. Handle TV's stored pairing state gracefully

@@ -1,7 +1,25 @@
 use std::fmt;
+use std::sync::Arc;
 use swaybeam_capture::PipeWireStream;
 mod test_pattern;
 pub use test_pattern::{Frame, TestPatternConfig, TestPatternGenerator};
+
+use aes::Aes128;
+use ctr::cipher::{KeyIvInit, StreamCipher};
+type Aes128Ctr = ctr::Ctr128BE<Aes128>;
+
+/// HDCP 2.x encryption configuration for content protection
+#[derive(Debug, Clone)]
+pub struct HdcpEncryptionConfig {
+    /// Session key (Ks) - 128 bits
+    pub ks: [u8; 16],
+    /// Receiver IV (Riv) - 64 bits
+    pub riv: [u8; 8],
+    /// Receiver nonce (r_rx) - 64 bits, used in IV construction
+    pub rrx: [u8; 8],
+    /// HDCP receiver version (2, 3 for HDCP 2.2, 2.3)
+    pub receiver_version: u8,
+}
 
 /// Possible video codecs supported by the stream
 #[derive(Debug, Clone, PartialEq)]
@@ -258,7 +276,6 @@ use gstreamer as gst;
 use gstreamer::glib;
 use gstreamer::prelude::*;
 use gstreamer_app::AppSrc;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 impl From<glib::BoolError> for StreamError {
@@ -285,6 +302,12 @@ struct StreamPipelineInner {
     _audio_appsrc: Option<AppSrc>,
     bus_watch_guard: Option<gst::bus::BusWatchGuard>,
     _pw_stream: Option<PipeWireStream>,
+    hdcp_encryption: Option<Arc<std::sync::Mutex<HdcpEncryptionState>>>,
+}
+
+struct HdcpEncryptionState {
+    config: HdcpEncryptionConfig,
+    block_counter: u64,
 }
 
 impl StreamPipelineInner {
@@ -515,6 +538,7 @@ impl StreamPipelineInner {
             _audio_appsrc: None,
             bus_watch_guard: Some(bus_watch_guard),
             _pw_stream: None,
+            hdcp_encryption: None,
         })
     }
 
@@ -733,6 +757,7 @@ impl StreamPipelineInner {
             _audio_appsrc: None,
             bus_watch_guard: Some(bus_watch_guard),
             _pw_stream: Some(pw_stream),
+            hdcp_encryption: None,
         })
     }
 
@@ -763,6 +788,92 @@ impl StreamPipelineInner {
         self.output_port = Some(port);
 
         Ok(())
+    }
+
+    pub fn setup_hdcp_encryption(&mut self, config: HdcpEncryptionConfig) {
+        let encryption_state = Arc::new(std::sync::Mutex::new(HdcpEncryptionState {
+            config,
+            block_counter: 0,
+        }));
+        self.hdcp_encryption = Some(encryption_state.clone());
+
+        let udpsink = match self.pipeline.by_name("udpsink") {
+            Some(sink) => sink,
+            None => {
+                tracing::warn!("Failed to get udpsink element for HDCP encryption");
+                return;
+            }
+        };
+
+        let sink_pad = match udpsink.static_pad("sink") {
+            Some(pad) => pad,
+            None => {
+                tracing::warn!("Failed to get udpsink sink pad for HDCP encryption");
+                return;
+            }
+        };
+
+        sink_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
+            let buffer = match info.buffer_mut() {
+                Some(buf) => buf,
+                None => return gst::PadProbeReturn::Ok,
+            };
+
+            let mut map = match buffer.get_mut().and_then(|b| b.map_writable().ok()) {
+                Some(m) => m,
+                None => return gst::PadProbeReturn::Ok,
+            };
+
+            let data = map.as_mut_slice();
+
+            if data.len() < 12 {
+                tracing::debug!("Buffer too small for RTP header, skipping encryption");
+                return gst::PadProbeReturn::Ok;
+            }
+
+            let cc = (data[0] & 0x0F) as usize;
+            let header_len = 12 + cc * 4;
+
+            if data.len() <= header_len {
+                tracing::debug!("Buffer has no payload after RTP header, skipping encryption");
+                return gst::PadProbeReturn::Ok;
+            }
+
+            let payload = &mut data[header_len..];
+
+            let mut state = encryption_state.lock().unwrap();
+            let ks = state.config.ks;
+            let riv = state.config.riv;
+            let rrx = state.config.rrx;
+            let version = state.config.receiver_version;
+            let counter = state.block_counter;
+
+            let mut iv = [0u8; 16];
+            iv[..8].copy_from_slice(&riv);
+            if version >= 2 {
+                for (i, byte) in iv[8..16].iter_mut().enumerate() {
+                    let shift = (7 - i) * 8;
+                    *byte = rrx[i] ^ ((counter >> shift) & 0xFF) as u8;
+                }
+            }
+
+            tracing::trace!(
+                "HDCP encrypting {} bytes at counter {}, IV={:02x?}",
+                payload.len(),
+                counter,
+                iv
+            );
+
+            let mut cipher = Aes128Ctr::new(&ks.into(), &iv.into());
+            cipher.apply_keystream(payload);
+
+            let blocks_encrypted = payload.len().div_ceil(16);
+            state.block_counter += blocks_encrypted as u64;
+
+            gst::PadProbeReturn::Ok
+        });
+
+        tracing::info!("HDCP encryption pad probe installed on udpsink");
     }
 
     /// Sets caps for the input
@@ -921,6 +1032,30 @@ impl StreamPipeline {
     pub async fn set_output(&self, host: &str, port: u16) -> Result<(), StreamError> {
         let mut guard = self.inner.lock().await;
         guard.set_output(host, port)
+    }
+
+    pub async fn set_hdcp_encryption(&self, config: HdcpEncryptionConfig) {
+        let mut guard = self.inner.lock().await;
+        tracing::info!(
+            "Setting HDCP encryption: ks={}, riv={}, rrx={}, version={}",
+            config
+                .ks
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>(),
+            config
+                .riv
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>(),
+            config
+                .rrx
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>(),
+            config.receiver_version
+        );
+        guard.setup_hdcp_encryption(config);
     }
 
     pub async fn set_caps(&self, caps: &gst::Caps) -> Result<(), StreamError> {
@@ -1130,5 +1265,74 @@ mod tests {
         assert_eq!(config_4k_60fps.video_height, 2160);
         assert_eq!(config_4k_60fps.video_bitrate, 40_000_000);
         assert_eq!(config_4k_60fps.video_framerate, 60);
+    }
+
+    #[test]
+    fn test_hdcp_iv_construction() {
+        let riv: [u8; 8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let rrx: [u8; 8] = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
+        let counter: u64 = 0x0000000000000001;
+
+        let mut iv = [0u8; 16];
+        iv[..8].copy_from_slice(&riv);
+        for (i, byte) in iv[8..16].iter_mut().enumerate() {
+            let shift = (7 - i) * 8;
+            *byte = rrx[i] ^ ((counter >> shift) & 0xFF) as u8;
+        }
+
+        assert_eq!(&iv[..8], &riv);
+        assert_eq!(&iv[8..15], &rrx[..7]);
+        assert_eq!(iv[15], 0x81);
+    }
+
+    #[test]
+    fn test_hdcp_aes_ctr_encryption() {
+        let ks: [u8; 16] = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ];
+        let riv: [u8; 8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let rrx: [u8; 8] = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
+        let counter: u64 = 0;
+
+        let mut iv = [0u8; 16];
+        iv[..8].copy_from_slice(&riv);
+        for (i, byte) in iv[8..16].iter_mut().enumerate() {
+            let shift = (7 - i) * 8;
+            *byte = rrx[i] ^ ((counter >> shift) & 0xFF) as u8;
+        }
+
+        let mut cipher = Aes128Ctr::new(&ks.into(), &iv.into());
+
+        let original_data = vec![0u8; 32];
+        let mut encrypted_data = original_data.clone();
+        cipher.apply_keystream(&mut encrypted_data);
+
+        assert_ne!(encrypted_data, original_data);
+
+        let mut cipher2 = Aes128Ctr::new(&ks.into(), &iv.into());
+        let mut decrypted_data = encrypted_data.clone();
+        cipher2.apply_keystream(&mut decrypted_data);
+
+        assert_eq!(decrypted_data, original_data);
+    }
+
+    #[test]
+    fn test_rtp_header_length() {
+        let rtp_packet_no_cc: [u8; 20] = [
+            0x80, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xAA, 0xBB,
+            0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x00,
+        ];
+        let cc = (rtp_packet_no_cc[0] & 0x0F) as usize;
+        assert_eq!(cc, 0);
+        assert_eq!(12 + cc * 4, 12);
+
+        let rtp_packet_with_cc: [u8; 28] = [
+            0x83, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x11, 0x22,
+            0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x00,
+        ];
+        let cc2 = (rtp_packet_with_cc[0] & 0x0F) as usize;
+        assert_eq!(cc2, 3);
+        assert_eq!(12 + cc2 * 4, 24);
     }
 }

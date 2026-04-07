@@ -22,6 +22,8 @@ pub enum CodecChoice {
     Auto,
     H264,
     H264Sw,
+    H265,
+    H265Sw,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -339,6 +341,8 @@ async fn daemon_command(
         CodecChoice::Auto => None,
         CodecChoice::H264 => Some(VideoCodec::H264Hardware),
         CodecChoice::H264Sw => Some(VideoCodec::H264),
+        CodecChoice::H265 => Some(VideoCodec::H265Hardware),
+        CodecChoice::H265Sw => Some(VideoCodec::H265),
     };
 
     let external_resolution = external.map(|e| match e {

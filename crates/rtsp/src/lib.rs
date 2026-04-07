@@ -946,12 +946,14 @@ pub struct RtspClient {
     cseq: u32,
     peer_session: RtspSession,
     idr_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    setup_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 struct PeerRequestOutcome {
     response: String,
     play_info: Option<PeerPlayInfo>,
     idr_requested: bool,
+    setup_handled: bool,
 }
 
 impl RtspClient {
@@ -970,11 +972,16 @@ impl RtspClient {
             cseq: 0,
             peer_session,
             idr_tx: None,
+            setup_tx: None,
         })
     }
 
     pub fn set_idr_channel(&mut self, tx: tokio::sync::mpsc::UnboundedSender<()>) {
         self.idr_tx = Some(tx);
+    }
+
+    pub fn set_setup_channel(&mut self, tx: tokio::sync::mpsc::UnboundedSender<()>) {
+        self.setup_tx = Some(tx);
     }
 
     /// Connect to a Miracast sink's RTSP server
@@ -1111,6 +1118,7 @@ impl RtspClient {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
                     idr_requested: false,
+                    setup_handled: false,
                 })
             }
             RtspMessage::GetParameter { cseq, params } => {
@@ -1120,6 +1128,7 @@ impl RtspClient {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
                     idr_requested: false,
+                    setup_handled: false,
                 })
             }
             RtspMessage::SetParameter { cseq, params } => {
@@ -1129,6 +1138,7 @@ impl RtspClient {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
                     idr_requested: has_idr,
+                    setup_handled: false,
                 })
             }
             RtspMessage::Setup {
@@ -1141,6 +1151,7 @@ impl RtspClient {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
                     idr_requested: false,
+                    setup_handled: true,
                 })
             }
             RtspMessage::Play { cseq, session: _ } => {
@@ -1158,6 +1169,7 @@ impl RtspClient {
                         session_id: Some(self.peer_session.session_id.clone()),
                     }),
                     idr_requested: false,
+                    setup_handled: false,
                 })
             }
             RtspMessage::Teardown { cseq, session: _ } => {
@@ -1166,6 +1178,7 @@ impl RtspClient {
                     response: format!("RTSP/1.0 200 OK\r\nCSeq: {}\r\n{}\r\n", cseq, response),
                     play_info: None,
                     idr_requested: false,
+                    setup_handled: false,
                 })
             }
         }
@@ -1217,6 +1230,12 @@ impl RtspClient {
 
             if outcome.idr_requested {
                 if let Some(ref tx) = self.idr_tx {
+                    let _ = tx.send(());
+                }
+            }
+
+            if outcome.setup_handled {
+                if let Some(ref tx) = self.setup_tx {
                     let _ = tx.send(());
                 }
             }

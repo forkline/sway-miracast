@@ -15,3 +15,5 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 swaybeam-capture = { path = "../capture" }
 libc = "0.2"
+aes = "0.8"
+ctr = "0.9"

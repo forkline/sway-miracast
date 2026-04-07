@@ -83,11 +83,11 @@ pub struct Capture {
     config: CaptureConfig,
     active: bool,
     session_handle: Option<String>,
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "real_portal"))]
     _dbus_connection: Option<zbus::Connection>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "real_portal"))]
 impl Capture {
     pub fn new(config: CaptureConfig) -> Result<Self, CaptureError> {
         if config.width == 0 || config.height == 0 {
