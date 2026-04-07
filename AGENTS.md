@@ -229,31 +229,32 @@ When adding dependencies:
 ### Current Status
 
 - **H.264** works with hardware encoding (`vah264enc`) and software encoding (`x264enc`)
-- **H.265** HDCP handshake implemented with multi-approach verification
-- TV sends r_rx before H_prime, suggesting pre-computed H_prime
-- Multi-approach verification tries all possible IV/message format combinations
+- **H.265** HDCP handshake implemented but H_prime verification fails due to TV's stored pairing state
+- TV (LG OLED) has stored HDCP pairing from another device and won't accept new pairing
 
 ### HDCP 2.x Implementation Progress
 
-1. **Handshake Messages Working**
-   - AKE_Init → AKE_Send_Cert → AKE_No_Stored_Km → r_rx → H_prime → Pairing_Info → LC_Init → L_prime → SKE_Send_Eks
-   - Full handshake observed in packet captures
+1. **Handshake Flow (when TV accepts)**
+   - AKE_Stored_Km attempted first (with generated Km)
+   - Falls back to AKE_No_Stored_Km
+   - TV sends: r_rx → H_prime → (closes connection if pairing state mismatch)
+   - Multi-approach verification tries all IV/message format combinations
 
 2. **Key Findings**
    - IV construction: `r_tx || r_rx[0..7] || counter` for HDCP 2.2+ (NOT full r_rx)
    - Counter is in byte 15, XORed with 0x01 for second block
    - RSA-OAEP with SHA-1, empty label
    - Kd derivation uses AES-ECB to encrypt IV blocks
-   - TV sends r_rx (0x06) BEFORE H_prime (0x07), unusual per spec
+   - TV (LG OLED) requires clearing stored HDCP pairing before accepting new devices
 
-3. **Multi-Approach Verification (NEW)**
+3. **Multi-Approach Verification**
    - Tries all combinations of IV and message formats
-   - HDCP 2.2 IV (with r_rx) + HDCP 2.2 message (r_tx || repeater || receiver_id)
+   - HDCP 2.2 IV (with r_rx[0..7]) + HDCP 2.2 message (r_tx || repeater || receiver_id)
    - HDCP 2.2 IV + HDCP 2.0 message (just r_tx)
    - HDCP 2.0 IV (no r_rx) + HDCP 2.2 message
    - HDCP 2.0 IV + HDCP 2.0 message
    - Message formats with r_rx included
-   - Alternative IV format (r_tx || counter || r_rx)
+   - Full r_rx IV format (r_tx || r_rx[8])
    - Stores verified Kd for consistent L_prime and SKE computation
 
 4. **Key Derivation**
@@ -262,20 +263,30 @@ When adding dependencies:
    - H_prime message format for HDCP 2.2+: r_tx || repeater_bit || receiver_id
    - L_prime key: Kd XOR r_rx (last 8 bytes), message: r_n
 
+### Solution for H_prime Mismatch
+
+If the TV has stored HDCP pairing from another device, you need to clear it:
+
+**For LG OLED TVs:**
+1. Go to Settings → All Settings → Connection
+2. Select Mobile Connection or Screen Share
+3. Look for "Clear HDCP Pairing" or similar option
+4. After clearing, retry the H.265 connection
+
 ### Files to Review
 
 - `crates/daemon/src/lib.rs`:
-  - Lines 1311-1378: `verify_h_prime_multi_approach()` - multi-format H_prime verification
-  - Lines 1380-1446: `verify_l_prime_multi_approach()` - multi-format L_prime verification
-  - Lines 1498-1559: `compute_hdcp_kd()` and `compute_hdcp_kd_alt_iv()` - Kd derivation
-  - Lines 1561-1588: `compute_hdcp_kd2()` - Kd2 for SKE
-  - Lines 1252-1286: `send_hdcp_ske_send_eks_with_kd()` - SKE with verified Kd
-- `crates/stream/src/lib.rs` lines 793-870 for encryption setup
-- `docs/HDCP_TEST_VECTORS.md` for test vectors
+  - `verify_h_prime_multi_approach()` - multi-format H_prime verification
+  - `verify_l_prime_multi_approach()` - multi-format L_prime verification
+  - `compute_hdcp_kd()` and `compute_hdcp_kd_full_rrx()` - Kd derivation
+  - `compute_hdcp_kd2()` - Kd2 for SKE
+  - `send_hdcp_ske_send_eks_with_kd()` - SKE with verified Kd
+- `crates/stream/src/lib.rs` - encryption setup
+- `docs/HDCP_TEST_VECTORS.md` - test vectors
 
 ### Next Steps
 
-1. Test with real TV to see which format matches H_prime
-2. If no format matches, investigate stored pairing state (AKE_Stored_Km)
-3. Store Km after successful pairing for future connections
+1. User clears TV's HDCP pairing state
+2. Retest H.265 handshake - H_prime should match
+3. Complete LC_Init → L_prime → SKE_Send_Eks flow
 4. Verify encrypted H.265 stream is correctly decrypted by TV
