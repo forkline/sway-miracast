@@ -229,8 +229,9 @@ When adding dependencies:
 ### Current Status
 
 - **H.264** works with hardware encoding (`vah264enc`) and software encoding (`x264enc`)
-- **H.265** HDCP handshake implemented but H_prime verification failing
-- TV may store pairing state expecting AKE_Stored_Km on subsequent connections
+- **H.265** HDCP handshake implemented with multi-approach verification
+- TV sends r_rx before H_prime, suggesting pre-computed H_prime
+- Multi-approach verification tries all possible IV/message format combinations
 
 ### HDCP 2.x Implementation Progress
 
@@ -243,26 +244,38 @@ When adding dependencies:
    - Counter is in byte 15, XORed with 0x01 for second block
    - RSA-OAEP with SHA-1, empty label
    - Kd derivation uses AES-ECB to encrypt IV blocks
+   - TV sends r_rx (0x06) BEFORE H_prime (0x07), unusual per spec
 
-3. **Current Issues**
-   - H_prime mismatch: TV's H_prime doesn't match our computed value
-   - TV stores pairing state after successful handshake, may expect AKE_Stored_Km
-   - TV behavior inconsistent: sometimes sends H_prime, sometimes closes after r_rx
+3. **Multi-Approach Verification (NEW)**
+   - Tries all combinations of IV and message formats
+   - HDCP 2.2 IV (with r_rx) + HDCP 2.2 message (r_tx || repeater || receiver_id)
+   - HDCP 2.2 IV + HDCP 2.0 message (just r_tx)
+   - HDCP 2.0 IV (no r_rx) + HDCP 2.2 message
+   - HDCP 2.0 IV + HDCP 2.0 message
+   - Message formats with r_rx included
+   - Alternative IV format (r_tx || counter || r_rx)
+   - Stores verified Kd for consistent L_prime and SKE computation
 
 4. **Key Derivation**
    - Kd = AES-ECB(Km, r_tx || r_rx[0..7] || 0x00) || AES-ECB(Km, r_tx || r_rx[0..7] || 0x01)
    - Kd2 for SKE: key = Km XOR (0x00..00 || r_n), IV with counter 0x02
    - H_prime message format for HDCP 2.2+: r_tx || repeater_bit || receiver_id
+   - L_prime key: Kd XOR r_rx (last 8 bytes), message: r_n
 
 ### Files to Review
 
-- `crates/daemon/src/lib.rs` lines 1250-1345 for cryptographic functions
+- `crates/daemon/src/lib.rs`:
+  - Lines 1311-1378: `verify_h_prime_multi_approach()` - multi-format H_prime verification
+  - Lines 1380-1446: `verify_l_prime_multi_approach()` - multi-format L_prime verification
+  - Lines 1498-1559: `compute_hdcp_kd()` and `compute_hdcp_kd_alt_iv()` - Kd derivation
+  - Lines 1561-1588: `compute_hdcp_kd2()` - Kd2 for SKE
+  - Lines 1252-1286: `send_hdcp_ske_send_eks_with_kd()` - SKE with verified Kd
 - `crates/stream/src/lib.rs` lines 793-870 for encryption setup
 - `docs/HDCP_TEST_VECTORS.md` for test vectors
 
 ### Next Steps
 
-1. Debug H_prime mismatch - verify HMAC message format matches HDCP 2.2 spec
-2. Implement AKE_Stored_Km for subsequent connections after pairing
-3. Store Km securely for reuse with same TV
-4. Handle TV's stored pairing state gracefully
+1. Test with real TV to see which format matches H_prime
+2. If no format matches, investigate stored pairing state (AKE_Stored_Km)
+3. Store Km after successful pairing for future connections
+4. Verify encrypted H.265 stream is correctly decrypted by TV

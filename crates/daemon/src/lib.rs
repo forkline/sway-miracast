@@ -118,6 +118,7 @@ struct HdcpSessionMaterial {
     sent_ske: bool,
     ks: Option<[u8; 16]>,
     riv: Option<[u8; 8]>,
+    kd_for_encryption: Option<[u8; 32]>,
 }
 
 pub struct HdcpEncryptionConfig {
@@ -829,58 +830,131 @@ impl Daemon {
             Self::log_hdcp_message(&message);
 
             if let Some(cert) = cert {
-                if let Some(km) = Self::send_hdcp_no_stored_km(hdcp_stream, &cert).await {
-                    let mut rtx = [0u8; 8];
-                    rtx.copy_from_slice(&ake_init[1..]);
-                    let mut hdcp_session = HdcpSessionMaterial {
-                        rtx,
-                        km,
-                        rn: None,
-                        rrx: None,
-                        receiver_version: None,
-                        repeater: cert.repeater,
-                        receiver_id: cert.receiver_id,
-                        h_prime_verified: false,
-                        pairing_info_received: false,
-                        sent_lc_init: false,
-                        sent_ske: false,
-                        ks: None,
-                        riv: None,
-                    };
+                let rtx: [u8; 8] = ake_init[1..].try_into().unwrap();
 
-                    for _ in 0..12 {
+                let mut km = [0u8; 16];
+                OsRng.fill_bytes(&mut km);
+
+                let mut hdcp_session = HdcpSessionMaterial {
+                    rtx,
+                    km,
+                    rn: None,
+                    rrx: None,
+                    receiver_version: None,
+                    repeater: cert.repeater,
+                    receiver_id: cert.receiver_id,
+                    h_prime_verified: false,
+                    pairing_info_received: false,
+                    sent_lc_init: false,
+                    sent_ske: false,
+                    ks: None,
+                    riv: None,
+                    kd_for_encryption: None,
+                };
+
+                if Self::send_hdcp_stored_km(hdcp_stream, &cert, &km)
+                    .await
+                    .is_some()
+                {
+                    info!("Sent AKE_Stored_Km, waiting for response...");
+                    for attempt in 0..5 {
                         if let Some(message) = Self::read_hdcp_message(
                             hdcp_stream,
                             &mut read_buffer,
-                            Duration::from_millis(1200),
+                            Duration::from_millis(1500),
                         )
                         .await
                         {
+                            info!(
+                                "HDCP message {} received after AKE_Stored_Km: type=0x{:02x}, len={}",
+                                attempt + 1,
+                                message.first().unwrap_or(&0),
+                                message.len()
+                            );
                             Self::log_hdcp_message(&message);
                             Self::advance_hdcp_session(hdcp_stream, &mut hdcp_session, &message)
                                 .await;
-
-                            if hdcp_session.sent_ske {
-                                if let (Some(ks), Some(riv), Some(rrx), Some(version)) = (
-                                    hdcp_session.ks,
-                                    hdcp_session.riv,
-                                    hdcp_session.rrx,
-                                    hdcp_session.receiver_version,
-                                ) {
-                                    info!(
-                                        "HDCP handshake completed successfully, encryption ready"
-                                    );
-                                    return Some(HdcpEncryptionConfig {
-                                        ks,
-                                        riv,
-                                        rrx,
-                                        receiver_version: version,
-                                    });
-                                }
-                            }
                         } else {
+                            info!("AKE_Stored_Km path: no more messages");
                             break;
                         }
+                    }
+                }
+
+                if !hdcp_session.sent_ske {
+                    info!("AKE_Stored_Km didn't complete, trying AKE_No_Stored_Km...");
+                    read_buffer.clear();
+
+                    if let Some(new_km) = Self::send_hdcp_no_stored_km(hdcp_stream, &cert).await {
+                        hdcp_session.km = new_km;
+                        hdcp_session.h_prime_verified = false;
+                        hdcp_session.pairing_info_received = false;
+                        hdcp_session.sent_lc_init = false;
+                        hdcp_session.sent_ske = false;
+                        hdcp_session.rrx = None;
+
+                        for attempt in 0..12 {
+                            if let Some(message) = Self::read_hdcp_message(
+                                hdcp_stream,
+                                &mut read_buffer,
+                                Duration::from_millis(1500),
+                            )
+                            .await
+                            {
+                                info!(
+                                    "HDCP message {} received: type=0x{:02x}, len={}",
+                                    attempt + 1,
+                                    message.first().unwrap_or(&0),
+                                    message.len()
+                                );
+                                Self::log_hdcp_message(&message);
+                                Self::advance_hdcp_session(
+                                    hdcp_stream,
+                                    &mut hdcp_session,
+                                    &message,
+                                )
+                                .await;
+
+                                if hdcp_session.sent_ske {
+                                    if let (Some(ks), Some(riv), Some(rrx), Some(version)) = (
+                                        hdcp_session.ks,
+                                        hdcp_session.riv,
+                                        hdcp_session.rrx,
+                                        hdcp_session.receiver_version,
+                                    ) {
+                                        info!(
+                                            "HDCP handshake completed successfully, encryption ready"
+                                        );
+                                        return Some(HdcpEncryptionConfig {
+                                            ks,
+                                            riv,
+                                            rrx,
+                                            receiver_version: version,
+                                        });
+                                    }
+                                }
+                            } else {
+                                info!("HDCP read returned None after {} messages", attempt);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if hdcp_session.sent_ske {
+                    if let (Some(ks), Some(riv), Some(rrx), Some(version)) = (
+                        hdcp_session.ks,
+                        hdcp_session.riv,
+                        hdcp_session.rrx,
+                        hdcp_session.receiver_version,
+                    ) {
+                        info!("HDCP handshake completed successfully, encryption ready");
+                        return Some(HdcpEncryptionConfig {
+                            ks,
+                            riv,
+                            rrx,
+                            receiver_version: version,
+                        });
                     }
                 }
             }
@@ -977,6 +1051,8 @@ impl Daemon {
             return None;
         }
 
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
         info!(
             "Sent HDCP AKE_No_Stored_km for receiver_id={} repeater={} exponent={:02x}{:02x}{:02x}",
             cert.receiver_id
@@ -991,6 +1067,37 @@ impl Daemon {
         );
 
         Some(km)
+    }
+
+    async fn send_hdcp_stored_km(
+        hdcp_stream: &TcpStream,
+        cert: &HdcpReceiverCert,
+        km: &[u8; 16],
+    ) -> Option<[u8; 16]> {
+        let mut message = vec![0x05_u8];
+        let mut ekh_km = [0u8; 16];
+        ekh_km.copy_from_slice(km);
+        message.extend_from_slice(&ekh_km);
+
+        if !Self::write_hdcp_message(hdcp_stream, &message, "AKE_Stored_km").await {
+            return None;
+        }
+
+        let tx_info = Self::hdcp_transmitter_info_message();
+        if !Self::write_hdcp_message(hdcp_stream, &tx_info, "Transmitter_Info").await {
+            return None;
+        }
+
+        info!(
+            "Sent HDCP AKE_Stored_km for receiver_id={}",
+            cert.receiver_id
+                .iter()
+                .map(|byte| format!("{:02x}", byte))
+                .collect::<Vec<_>>()
+                .join("")
+        );
+
+        Some(*km)
     }
 
     async fn advance_hdcp_session(
@@ -1015,57 +1122,67 @@ impl Daemon {
                 info!("Stored HDCP rrx, waiting for H_prime and Pairing_Info before LC_Init");
             }
             Some(0x07) if message.len() >= 33 => {
+                let received_h_prime: [u8; 32] = message[1..33].try_into().unwrap();
                 let received_hex: String = message[1..33]
                     .iter()
                     .map(|b| format!("{:02x}", b))
                     .collect();
                 info!("HDCP H_prime received: {}", received_hex);
 
-                let kd = Self::compute_hdcp_kd(
-                    &hdcp_session.rtx,
-                    &hdcp_session.km,
-                    hdcp_session.rrx.as_ref(),
-                    hdcp_session.receiver_version,
-                );
-                let kd_hex: String = kd.iter().map(|b| format!("{:02x}", b)).collect();
-                info!("HDCP Kd for H_prime: {}", kd_hex);
+                info!("Attempting H_prime verification with multiple IV/message format combinations...");
 
-                let rtx_hex: String = hdcp_session
-                    .rtx
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
-                info!("HDCP r_tx for H_prime: {}", rtx_hex);
-
-                let expected_h_prime = Self::compute_hdcp_h_prime(
+                let verification_result = Self::verify_h_prime_multi_approach(
                     &hdcp_session.rtx,
                     &hdcp_session.km,
                     hdcp_session.rrx.as_ref(),
                     hdcp_session.receiver_version,
                     hdcp_session.repeater,
                     &hdcp_session.receiver_id,
+                    &received_h_prime,
                 );
-                let expected_hex: String = expected_h_prime
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
-                info!("HDCP H_prime expected: {}", expected_hex);
 
-                if message[1..33] == expected_h_prime {
-                    info!("Verified HDCP AKE_Send_H_prime against derived Kd");
+                if let Some((matched_format, kd_used)) = verification_result {
+                    info!(
+                        "H_prime verified with format: {} (Kd: {})",
+                        matched_format,
+                        kd_used
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<String>()
+                    );
                     hdcp_session.h_prime_verified = true;
+                    hdcp_session.kd_for_encryption = Some(kd_used);
                     Self::maybe_send_lc_init(hdcp_stream, hdcp_session).await;
                 } else {
                     tracing::warn!(
-                        "HDCP AKE_Send_H_prime mismatch - proceeding anyway for testing"
+                        "HDCP H_prime mismatch - all verification attempts failed. Proceeding for testing."
                     );
                     hdcp_session.h_prime_verified = true;
                     Self::maybe_send_lc_init(hdcp_stream, hdcp_session).await;
                 }
             }
             Some(0x08) if message.len() >= 17 => {
-                info!("Received HDCP AKE_Send_Pairing_Info");
+                let pairing_receiver_id: [u8; 5] = message[1..6].try_into().unwrap();
+                let ekh_km: [u8; 16] = message[6..22].try_into().unwrap();
+
+                let pairing_id_hex: String = pairing_receiver_id
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                let ekh_km_hex: String = ekh_km.iter().map(|b| format!("{:02x}", b)).collect();
+
+                info!(
+                    "Received HDCP AKE_Send_Pairing_Info: receiver_id={}, Ekh(km)={}",
+                    pairing_id_hex, ekh_km_hex
+                );
+
                 hdcp_session.pairing_info_received = true;
+
+                let tx_info = Self::hdcp_transmitter_info_message();
+                if !Self::write_hdcp_message(hdcp_stream, &tx_info, "Transmitter_Info").await {
+                    tracing::warn!("Failed to send Transmitter_Info");
+                }
+
                 Self::maybe_send_lc_init(hdcp_stream, hdcp_session).await;
             }
             Some(0x0a) if message.len() >= 33 && !hdcp_session.sent_ske => {
@@ -1091,43 +1208,43 @@ impl Daemon {
                     return;
                 };
 
-                let kd = Self::compute_hdcp_kd(
-                    &hdcp_session.rtx,
-                    &hdcp_session.km,
-                    Some(&rrx),
-                    hdcp_session.receiver_version,
-                );
-                let kd_hex: String = kd.iter().map(|b| format!("{:02x}", b)).collect();
-                info!("HDCP Kd fingerprint (first 8 bytes): {}", &kd_hex[..16]);
+                let received_l_prime: [u8; 32] = message[1..33].try_into().unwrap();
+                let received_hex: String = message[1..33]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                info!("HDCP L_prime received: {}", received_hex);
 
-                let expected_l_prime = Self::compute_hdcp_l_prime(
+                let verified_kd = hdcp_session.kd_for_encryption;
+                let verification_result = Self::verify_l_prime_multi_approach(
                     &hdcp_session.rtx,
                     &hdcp_session.km,
                     &rn,
                     &rrx,
                     hdcp_session.receiver_version,
+                    verified_kd.as_ref(),
+                    &received_l_prime,
                 );
 
-                let received_hex: String = message[1..33]
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
-                let expected_hex: String = expected_l_prime
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
-                info!("HDCP L_prime received: {}", received_hex);
-                info!("HDCP L_prime expected: {}", expected_hex);
+                if let Some((matched_format, kd_used)) = verification_result {
+                    info!(
+                        "L_prime verified with format: {} (Kd: {})",
+                        matched_format,
+                        kd_used
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<String>()
+                    );
+                    hdcp_session.kd_for_encryption = Some(kd_used);
 
-                if message[1..33] == expected_l_prime {
-                    info!("Verified HDCP LC_Send_L_prime; proceeding with SKE_Send_Eks");
-                    if let Some((ks, riv)) = Self::send_hdcp_ske_send_eks(
+                    if let Some((ks, riv)) = Self::send_hdcp_ske_send_eks_with_kd(
                         hdcp_stream,
                         &hdcp_session.rtx,
                         &hdcp_session.km,
                         &rn,
                         &rrx,
                         hdcp_session.receiver_version,
+                        verified_kd.as_ref(),
                     )
                     .await
                     {
@@ -1141,14 +1258,15 @@ impl Daemon {
                         );
                     }
                 } else {
-                    tracing::warn!("HDCP LC_Send_L_prime mismatch - proceeding anyway for testing");
-                    if let Some((ks, riv)) = Self::send_hdcp_ske_send_eks(
+                    tracing::warn!("HDCP L_prime mismatch - proceeding anyway for testing");
+                    if let Some((ks, riv)) = Self::send_hdcp_ske_send_eks_with_kd(
                         hdcp_stream,
                         &hdcp_session.rtx,
                         &hdcp_session.km,
                         &rn,
                         &rrx,
                         hdcp_session.receiver_version,
+                        verified_kd.as_ref(),
                     )
                     .await
                     {
@@ -1168,6 +1286,12 @@ impl Daemon {
     }
 
     async fn maybe_send_lc_init(hdcp_stream: &TcpStream, hdcp_session: &mut HdcpSessionMaterial) {
+        info!(
+            "maybe_send_lc_init: h_prime_verified={}, pairing_info_received={}, sent_lc_init={}",
+            hdcp_session.h_prime_verified,
+            hdcp_session.pairing_info_received,
+            hdcp_session.sent_lc_init
+        );
         if hdcp_session.h_prime_verified
             && hdcp_session.pairing_info_received
             && !hdcp_session.sent_lc_init
@@ -1178,6 +1302,8 @@ impl Daemon {
                 hdcp_session.rn = Some(rn);
                 hdcp_session.sent_lc_init = true;
                 info!("Sent LC_Init after H_prime and Pairing_Info verified");
+            } else {
+                tracing::warn!("Failed to send LC_Init!");
             }
         }
     }
@@ -1200,6 +1326,62 @@ impl Daemon {
         );
 
         true
+    }
+
+    async fn send_hdcp_ske_send_eks_with_kd(
+        hdcp_stream: &TcpStream,
+        rtx: &[u8; 8],
+        km: &[u8; 16],
+        rn: &[u8; 8],
+        rrx: &[u8; 8],
+        receiver_version: Option<u8>,
+        verified_kd: Option<&[u8; 32]>,
+    ) -> Option<([u8; 16], [u8; 8])> {
+        let use_rrx_in_kd2 =
+            verified_kd.map_or_else(|| receiver_version.is_some_and(|v| v >= 2), |_| true);
+
+        let kd2 = Self::compute_hdcp_kd2(
+            rtx,
+            km,
+            rn,
+            if use_rrx_in_kd2 { Some(rrx) } else { None },
+            receiver_version,
+        );
+        let mut xor_mask = kd2;
+        for (dst, src) in xor_mask[8..].iter_mut().zip(rrx.iter()) {
+            *dst ^= *src;
+        }
+
+        let kd2_hex: String = kd2.iter().map(|b| format!("{:02x}", b)).collect();
+        let mask_hex: String = xor_mask.iter().map(|b| format!("{:02x}", b)).collect();
+        info!(
+            "SKE Kd2 ({}): {} -> XOR mask: {}",
+            if use_rrx_in_kd2 { "HDCP2.2" } else { "HDCP2.0" },
+            kd2_hex,
+            mask_hex
+        );
+
+        let mut ks = [0u8; 16];
+        let mut riv = [0u8; 8];
+        OsRng.fill_bytes(&mut ks);
+        OsRng.fill_bytes(&mut riv);
+
+        let mut eks = [0u8; 16];
+        for (out, (ks_byte, mask_byte)) in eks.iter_mut().zip(ks.iter().zip(xor_mask.iter())) {
+            *out = *ks_byte ^ *mask_byte;
+        }
+
+        let mut message = [0u8; 25];
+        message[0] = 0x0b;
+        message[1..17].copy_from_slice(&eks);
+        message[17..25].copy_from_slice(&riv);
+
+        if !Self::write_hdcp_message(hdcp_stream, &message, "SKE_Send_Eks").await {
+            return None;
+        }
+
+        info!("Sent HDCP SKE_Send_Eks after verified locality check");
+        Some((ks, riv))
     }
 
     async fn send_hdcp_ske_send_eks(
@@ -1260,6 +1442,148 @@ impl Daemon {
         Self::compute_hmac_sha256(&kd, &message)
     }
 
+    fn verify_h_prime_multi_approach(
+        rtx: &[u8; 8],
+        km: &[u8; 16],
+        rrx: Option<&[u8; 8]>,
+        receiver_version: Option<u8>,
+        repeater: bool,
+        receiver_id: &[u8; 5],
+        received_h_prime: &[u8; 32],
+    ) -> Option<(String, [u8; 32])> {
+        let approaches = [
+            ("HDCP2.2 IV (r_rx[0..7]) + HDCP2.2 msg", true, true, false),
+            ("HDCP2.2 IV (r_rx[0..7]) + HDCP2.0 msg", true, false, false),
+            ("HDCP2.2 IV + msg with r_rx", true, true, true),
+            ("HDCP2.0 IV + HDCP2.2 msg", false, true, false),
+            ("HDCP2.0 IV + HDCP2.0 msg", false, false, false),
+            ("HDCP2.0 IV + msg with r_rx", false, true, true),
+        ];
+
+        info!(
+            "verify_h_prime inputs: r_tx={}, Km={}, r_rx={}, receiver_version={:?}, repeater={}, receiver_id={}",
+            rtx.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+            km.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+            rrx.map(|r| r.iter().map(|b| format!("{:02x}", b)).collect::<String>()).unwrap_or_else(|| "None".to_string()),
+            receiver_version,
+            repeater,
+            receiver_id.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        );
+
+        for (name, use_rrx_in_iv, use_extended_msg, include_rrx_in_msg) in approaches {
+            let kd = Self::compute_hdcp_kd(
+                rtx,
+                km,
+                if use_rrx_in_iv { rrx } else { None },
+                receiver_version,
+            );
+
+            let computed_h_prime = if include_rrx_in_msg {
+                if let Some(rrx_val) = rrx {
+                    let mut message = Vec::new();
+                    message.extend_from_slice(rtx);
+                    message.extend_from_slice(rrx_val);
+                    info!(
+                        "HMAC message (with r_rx): {}",
+                        message
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<String>()
+                    );
+                    Self::compute_hmac_sha256(&kd, &message)
+                } else if use_extended_msg {
+                    let mut message = Vec::new();
+                    message.extend_from_slice(rtx);
+                    message.push(if repeater { 0x80 } else { 0x00 });
+                    message.extend_from_slice(receiver_id);
+                    info!(
+                        "HMAC message (extended): {}",
+                        message
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<String>()
+                    );
+                    Self::compute_hmac_sha256(&kd, &message)
+                } else {
+                    info!(
+                        "HMAC message (just r_tx): {}",
+                        rtx.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                    );
+                    Self::compute_hmac_sha256(&kd, rtx)
+                }
+            } else if use_extended_msg {
+                let mut message = Vec::new();
+                message.extend_from_slice(rtx);
+                message.push(if repeater { 0x80 } else { 0x00 });
+                message.extend_from_slice(receiver_id);
+                info!(
+                    "HMAC message (extended): {}",
+                    message
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>()
+                );
+                Self::compute_hmac_sha256(&kd, &message)
+            } else {
+                info!(
+                    "HMAC message (just r_tx): {}",
+                    rtx.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                );
+                Self::compute_hmac_sha256(&kd, rtx)
+            };
+
+            let kd_hex: String = kd.iter().map(|b| format!("{:02x}", b)).collect();
+            let computed_hex: String = computed_h_prime
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect();
+
+            info!("Testing {}: Kd={}, H_prime={}", name, kd_hex, computed_hex);
+
+            if computed_h_prime == *received_h_prime {
+                return Some((name.to_string(), kd));
+            }
+        }
+
+        if let Some(rrx) = rrx {
+            info!("Trying full r_rx (8 bytes) in IV...");
+            let kd_full_rrx = Self::compute_hdcp_kd_full_rrx(rtx, km, rrx);
+            for (msg_name, extended, with_rrx) in [
+                ("HDCP2.2 msg", true, false),
+                ("HDCP2.0 msg", false, false),
+                ("msg with r_rx", true, true),
+            ] {
+                let computed = if with_rrx {
+                    let mut message = Vec::new();
+                    message.extend_from_slice(rtx);
+                    message.extend_from_slice(rrx);
+                    Self::compute_hmac_sha256(&kd_full_rrx, &message)
+                } else if extended {
+                    let mut message = Vec::new();
+                    message.extend_from_slice(rtx);
+                    message.push(if repeater { 0x80 } else { 0x00 });
+                    message.extend_from_slice(receiver_id);
+                    Self::compute_hmac_sha256(&kd_full_rrx, &message)
+                } else {
+                    Self::compute_hmac_sha256(&kd_full_rrx, rtx)
+                };
+
+                let kd_hex: String = kd_full_rrx.iter().map(|b| format!("{:02x}", b)).collect();
+                let computed_hex: String = computed.iter().map(|b| format!("{:02x}", b)).collect();
+                info!(
+                    "Testing Full r_rx IV + {}: Kd={}, H_prime={}",
+                    msg_name, kd_hex, computed_hex
+                );
+
+                if computed == *received_h_prime {
+                    return Some(("Full r_rx IV + ".to_string() + msg_name, kd_full_rrx));
+                }
+            }
+        }
+
+        None
+    }
+
     fn compute_hdcp_l_prime(
         rtx: &[u8; 8],
         km: &[u8; 16],
@@ -1281,6 +1605,72 @@ impl Daemon {
         );
 
         Self::compute_hmac_sha256(&key, rn)
+    }
+
+    fn verify_l_prime_multi_approach(
+        rtx: &[u8; 8],
+        km: &[u8; 16],
+        rn: &[u8; 8],
+        rrx: &[u8; 8],
+        receiver_version: Option<u8>,
+        verified_kd: Option<&[u8; 32]>,
+        received_l_prime: &[u8; 32],
+    ) -> Option<(String, [u8; 32])> {
+        if let Some(kd) = verified_kd {
+            let mut key = *kd;
+            for (dst, src) in key[24..32].iter_mut().zip(rrx.iter()) {
+                *dst ^= *src;
+            }
+
+            let computed = Self::compute_hmac_sha256(&key, rn);
+            let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+            let computed_hex: String = computed.iter().map(|b| format!("{:02x}", b)).collect();
+            info!(
+                "Testing L_prime with verified Kd: key={}, computed={}",
+                key_hex, computed_hex
+            );
+
+            if computed == *received_l_prime {
+                return Some(("Verified Kd + XOR r_rx".to_string(), *kd));
+            }
+        }
+
+        let approaches = [
+            ("HDCP2.2 Kd + XOR r_rx", true),
+            ("HDCP2.0 Kd + XOR r_rx", false),
+            ("HDCP2.2 Kd + no XOR", true),
+            ("HDCP2.0 Kd + no XOR", false),
+        ];
+
+        for (name, use_rrx_in_kd) in approaches {
+            let kd = Self::compute_hdcp_kd(
+                rtx,
+                km,
+                if use_rrx_in_kd { Some(rrx) } else { None },
+                receiver_version,
+            );
+
+            let mut key = kd;
+            if name.contains("XOR") {
+                for (dst, src) in key[24..32].iter_mut().zip(rrx.iter()) {
+                    *dst ^= *src;
+                }
+            }
+
+            let computed = Self::compute_hmac_sha256(&key, rn);
+            let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+            let computed_hex: String = computed.iter().map(|b| format!("{:02x}", b)).collect();
+            info!(
+                "Testing {}: key={}, computed={}",
+                name, key_hex, computed_hex
+            );
+
+            if computed == *received_l_prime {
+                return Some((name.to_string(), kd));
+            }
+        }
+
+        None
     }
 
     fn compute_hdcp_kd(
@@ -1322,6 +1712,43 @@ impl Daemon {
             "Kd derivation: Second block (AES-ECB(Km, IV)): {}",
             second_hex
         );
+
+        let mut kd = [0u8; 32];
+        kd[..16].copy_from_slice(&first);
+        kd[16..].copy_from_slice(&second);
+        kd
+    }
+
+    fn compute_hdcp_kd_full_rrx(rtx: &[u8; 8], km: &[u8; 16], rrx: &[u8; 8]) -> [u8; 32] {
+        let mut iv = [0u8; 16];
+        iv[..8].copy_from_slice(rtx);
+        iv[8..].copy_from_slice(rrx);
+
+        let iv_hex: String = iv.iter().map(|b| format!("{:02x}", b)).collect();
+        info!("Kd Full r_rx IV: r_tx || r_rx (8 bytes): {}", iv_hex);
+
+        let first = Self::compute_hdcp_ctr_block(km, &iv);
+        iv[15] ^= 0x01;
+        let second = Self::compute_hdcp_ctr_block(km, &iv);
+
+        let mut kd = [0u8; 32];
+        kd[..16].copy_from_slice(&first);
+        kd[16..].copy_from_slice(&second);
+        kd
+    }
+
+    fn compute_hdcp_kd_alt_iv(rtx: &[u8; 8], km: &[u8; 16], rrx: &[u8; 8]) -> [u8; 32] {
+        let mut iv = [0u8; 16];
+        iv[..8].copy_from_slice(rtx);
+        iv[8] = 0x00;
+        iv[9..].copy_from_slice(rrx);
+
+        let iv_hex: String = iv.iter().map(|b| format!("{:02x}", b)).collect();
+        info!("Kd Alt IV: r_tx || counter || r_rx: {}", iv_hex);
+
+        let first = Self::compute_hdcp_ctr_block(km, &iv);
+        iv[8] = 0x01;
+        let second = Self::compute_hdcp_ctr_block(km, &iv);
 
         let mut kd = [0u8; 32];
         kd[..16].copy_from_slice(&first);
