@@ -818,10 +818,10 @@ impl P2pManager {
                             ))
                         })?;
 
-                    if let Ok(addresses) = ip4_config.addresses().await {
-                        if let Some((addr, _, _)) = addresses.first() {
-                            return Ok(format_ipv4(u32::from_be(*addr)));
-                        }
+                    if let Ok(addresses) = ip4_config.addresses().await
+                        && let Some((addr, _, _)) = addresses.first()
+                    {
+                        return Ok(format_ipv4(u32::from_be(*addr)));
                     }
                 }
             }
@@ -851,20 +851,19 @@ impl P2pManager {
             if let Ok(ip4_config_path) = active_conn_proxy
                 .get_property::<zvariant::OwnedObjectPath>("Ip4Config")
                 .await
+                && ip4_config_path.as_str() != "/"
             {
-                if ip4_config_path.as_str() != "/" {
-                    let ip4_config = IP4ConfigProxy::builder(&self.connection)
-                        .path(ip4_config_path)?
-                        .build()
-                        .await?;
+                let ip4_config = IP4ConfigProxy::builder(&self.connection)
+                    .path(ip4_config_path)?
+                    .build()
+                    .await?;
 
-                    if let Ok(addresses) = ip4_config.addresses().await {
-                        if let Some((addr, _, _)) = addresses.first() {
-                            let ip_str = format_ipv4(u32::from_be(*addr));
-                            tracing::debug!("Got IP from active connection: {}", ip_str);
-                            return Ok(ip_str);
-                        }
-                    }
+                if let Ok(addresses) = ip4_config.addresses().await
+                    && let Some((addr, _, _)) = addresses.first()
+                {
+                    let ip_str = format_ipv4(u32::from_be(*addr));
+                    tracing::debug!("Got IP from active connection: {}", ip_str);
+                    return Ok(ip_str);
                 }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
