@@ -83,7 +83,7 @@ pub struct Capture {
     config: CaptureConfig,
     active: bool,
     session_handle: Option<String>,
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "real_portal"))]
     _dbus_connection: Option<zbus::Connection>,
 }
 
@@ -106,6 +106,7 @@ impl Capture {
             config,
             active: false,
             session_handle: None,
+            #[cfg(all(target_os = "linux", feature = "real_portal"))]
             _dbus_connection: None,
         })
     }
