@@ -125,13 +125,14 @@ pub fn check_sway() -> anyhow::Result<CheckResult> {
         let compositors = ["sway", "river", "labwc", "hyprland", "wayfire"];
         for compositor in compositors {
             let output = Command::new("pgrep").arg(compositor).output();
-            if let Ok(o) = output {
-                if o.status.success() && !o.stdout.is_empty() {
-                    return Ok(CheckResult::ok(&format!(
-                        "Running under {} (wlroots-compatible)",
-                        compositor
-                    )));
-                }
+            if let Ok(o) = output
+                && o.status.success()
+                && !o.stdout.is_empty()
+            {
+                return Ok(CheckResult::ok(&format!(
+                    "Running under {} (wlroots-compatible)",
+                    compositor
+                )));
             }
         }
 
@@ -276,10 +277,10 @@ pub fn check_network_manager() -> anyhow::Result<CheckResult> {
                 .arg("State")
                 .output();
 
-            if let Ok(dbc) = dbus_call {
-                if dbc.status.success() {
-                    return Ok(CheckResult::ok("NetworkManager accessible via D-Bus"));
-                }
+            if let Ok(dbc) = dbus_call
+                && dbc.status.success()
+            {
+                return Ok(CheckResult::ok("NetworkManager accessible via D-Bus"));
             }
 
             // Try nmcli as final fallback

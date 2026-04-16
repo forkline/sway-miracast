@@ -198,12 +198,12 @@ fn parse_headless_outputs(json: &str) -> Vec<String> {
 
     for line in json.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("\"name\":") {
-            if let Some(rest) = trimmed.strip_prefix("\"name\":") {
-                let rest = rest.trim().trim_end_matches(',').trim_matches('"');
-                if rest.starts_with("HEADLESS-") {
-                    names.push(rest.to_string());
-                }
+        if trimmed.starts_with("\"name\":")
+            && let Some(rest) = trimmed.strip_prefix("\"name\":")
+        {
+            let rest = rest.trim().trim_end_matches(',').trim_matches('"');
+            if rest.starts_with("HEADLESS-") {
+                names.push(rest.to_string());
             }
         }
     }
@@ -334,17 +334,17 @@ pub fn parse_resolution_from_wfd_formats(formats: &str) -> ExternalResolution {
 
     for format in &formats_list {
         let components: Vec<&str> = format.split_whitespace().collect();
-        if components.len() >= 4 {
-            if let Ok(cea_mask) = u64::from_str_radix(components[2], 16) {
-                if (cea_mask & 0x80) != 0 {
-                    return ExternalResolution::FourK;
-                }
-                if (cea_mask & 0x40) != 0 || (cea_mask & 0x20) != 0 {
-                    return ExternalResolution::TenEighty;
-                }
-                if (cea_mask & 0x08) != 0 {
-                    return ExternalResolution::SevenTwenty;
-                }
+        if components.len() >= 4
+            && let Ok(cea_mask) = u64::from_str_radix(components[2], 16)
+        {
+            if (cea_mask & 0x80) != 0 {
+                return ExternalResolution::FourK;
+            }
+            if (cea_mask & 0x40) != 0 || (cea_mask & 0x20) != 0 {
+                return ExternalResolution::TenEighty;
+            }
+            if (cea_mask & 0x08) != 0 {
+                return ExternalResolution::SevenTwenty;
             }
         }
     }
