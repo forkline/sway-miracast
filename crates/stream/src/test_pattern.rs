@@ -63,21 +63,15 @@ impl TestPatternGenerator {
 
                 // Set BGRA values
                 if is_moving_line {
-                    // Bright white line that moves across the screen
-                    {
-                        frame_data[idx] = 255; // B
-                        frame_data[idx + 1] = 255; // G
-                        frame_data[idx + 2] = 255; // R
-                        frame_data[idx + 3] = 255; // A
-                    }
+                    frame_data[idx] = 255;
+                    frame_data[idx + 1] = 255;
+                    frame_data[idx + 2] = 255;
+                    frame_data[idx + 3] = 255;
                 } else {
-                    // Standard color bars
-                    {
-                        frame_data[idx] = color[2]; // B
-                        frame_data[idx + 1] = color[1]; // G
-                        frame_data[idx + 2] = color[0]; // R
-                        frame_data[idx + 3] = 255; // A
-                    }
+                    frame_data[idx] = color[2];
+                    frame_data[idx + 1] = color[1];
+                    frame_data[idx + 2] = color[0];
+                    frame_data[idx + 3] = 255;
                 }
             }
         }
