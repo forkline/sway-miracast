@@ -52,7 +52,8 @@ async fn main() -> anyhow::Result<()> {
     sel.insert("types", Value::from(1u32));
     sel.insert("multiple", Value::from(false));
     sel.insert("cursor_mode", Value::from(2u32));
-    let _: zbus::zvariant::OwnedObjectPath = proxy.call("SelectSources", &(session.clone(), sel)).await?;
+    let _: zbus::zvariant::OwnedObjectPath =
+        proxy.call("SelectSources", &(session.clone(), sel)).await?;
     sub2.recv().await?;
     println!("SelectSources: ok");
 
@@ -61,7 +62,8 @@ async fn main() -> anyhow::Result<()> {
     let sub3 = subscribe_signal(&conn, &resp3).await?;
     let mut st: HashMap<&str, Value<'_>> = HashMap::new();
     st.insert("handle_token", Value::from(req3.as_str()));
-    let _: zbus::zvariant::OwnedObjectPath = proxy.call("Start", &(session.clone(), "", st)).await?;
+    let _: zbus::zvariant::OwnedObjectPath =
+        proxy.call("Start", &(session.clone(), "", st)).await?;
     let start_res = sub3.recv().await?;
     println!("Start: ok");
 

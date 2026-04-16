@@ -10,7 +10,10 @@ use zbus::Connection;
 )]
 trait NetworkManager {
     async fn get_devices(&self) -> zbus::Result<Vec<zbus::zvariant::OwnedObjectPath>>;
-    async fn get_device_by_ip_iface(&self, iface: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    async fn get_device_by_ip_iface(
+        &self,
+        iface: &str,
+    ) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
     async fn activate_connection(
         &self,
         connection: zbus::zvariant::ObjectPath<'_>,
@@ -22,7 +25,10 @@ trait NetworkManager {
         connection: HashMap<&str, HashMap<&str, zbus::zvariant::Value<'_>>>,
         device: zbus::zvariant::ObjectPath<'_>,
         specific_object: zbus::zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<(zbus::zvariant::OwnedObjectPath, zbus::zvariant::OwnedObjectPath)>;
+    ) -> zbus::Result<(
+        zbus::zvariant::OwnedObjectPath,
+        zbus::zvariant::OwnedObjectPath,
+    )>;
     async fn add_and_activate_connection2(
         &self,
         connection: HashMap<&str, HashMap<&str, zbus::zvariant::Value<'_>>>,
@@ -74,7 +80,10 @@ trait WpaP2PDevice {
     default_service = "org.freedesktop.NetworkManager"
 )]
 trait WifiP2P {
-    async fn start_find(&self, options: HashMap<&str, zbus::zvariant::Value<'_>>) -> zbus::Result<()>;
+    async fn start_find(
+        &self,
+        options: HashMap<&str, zbus::zvariant::Value<'_>>,
+    ) -> zbus::Result<()>;
     async fn stop_find(&self) -> zbus::Result<()>;
 
     #[zbus(property)]
@@ -508,20 +517,27 @@ impl P2pManager {
         connection_props.insert("autoconnect", zbus::zvariant::Value::Bool(false));
 
         let mut ipv4_props: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
-        ipv4_props.insert("method", zbus::zvariant::Value::Str(zbus::zvariant::Str::from("auto")));
+        ipv4_props.insert(
+            "method",
+            zbus::zvariant::Value::Str(zbus::zvariant::Str::from("auto")),
+        );
         ipv4_props.insert("never-default", zbus::zvariant::Value::Bool(true));
 
         let mut ipv6_props: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
-        ipv6_props.insert("method", zbus::zvariant::Value::Str(zbus::zvariant::Str::from("auto")));
+        ipv6_props.insert(
+            "method",
+            zbus::zvariant::Value::Str(zbus::zvariant::Str::from("auto")),
+        );
         ipv6_props.insert("never-default", zbus::zvariant::Value::Bool(true));
         ipv6_props.insert("may-fail", zbus::zvariant::Value::Bool(true));
 
-        let connection_config: HashMap<&str, HashMap<&str, zbus::zvariant::Value<'_>>> = HashMap::from([
-            ("connection", connection_props),
-            ("wifi-p2p", wifi_p2p_props),
-            ("ipv4", ipv4_props),
-            ("ipv6", ipv6_props),
-        ]);
+        let connection_config: HashMap<&str, HashMap<&str, zbus::zvariant::Value<'_>>> =
+            HashMap::from([
+                ("connection", connection_props),
+                ("wifi-p2p", wifi_p2p_props),
+                ("ipv4", ipv4_props),
+                ("ipv6", ipv6_props),
+            ]);
 
         let activation_options: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::from([
             (
@@ -715,11 +731,12 @@ impl P2pManager {
         &self,
         properties: &HashMap<String, zbus::zvariant::OwnedValue>,
     ) -> Option<GroupStartedInfo> {
-        let interface_object: zbus::zvariant::OwnedObjectPath = (*properties.get("interface_object")?)
-            .try_clone()
-            .ok()?
-            .try_into()
-            .ok()?;
+        let interface_object: zbus::zvariant::OwnedObjectPath = (*properties
+            .get("interface_object")?)
+        .try_clone()
+        .ok()?
+        .try_into()
+        .ok()?;
         let role: String = (*properties.get("role")?)
             .try_clone()
             .ok()?

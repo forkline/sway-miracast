@@ -256,16 +256,18 @@ impl Capture {
             .get("streams")
             .ok_or_else(|| CaptureError::PortalError("No streams in Start response".into()))?;
 
-        let streams: Vec<(u32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>)> =
-            streams_value
-                .downcast_ref::<zbus::zvariant::Array>()
-                .map_err(|e| {
-                    CaptureError::PortalError(format!("Failed to deserialize streams array: {}", e))
-                })?
-                .try_into()
-                .map_err(|e: zbus::zvariant::Error| {
-                    CaptureError::PortalError(format!("Failed to parse streams entries: {}", e))
-                })?;
+        let streams: Vec<(
+            u32,
+            std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+        )> = streams_value
+            .downcast_ref::<zbus::zvariant::Array>()
+            .map_err(|e| {
+                CaptureError::PortalError(format!("Failed to deserialize streams array: {}", e))
+            })?
+            .try_into()
+            .map_err(|e: zbus::zvariant::Error| {
+                CaptureError::PortalError(format!("Failed to parse streams entries: {}", e))
+            })?;
 
         let (node_id, props) = streams
             .into_iter()
