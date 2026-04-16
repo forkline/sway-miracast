@@ -16,7 +16,7 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time", "signal"] }
 parking_lot.workspace = true
 gstreamer.workspace = true
-aes = "0.8"
+aes = "0.9"
 ctr = "0.10"
 hmac = "0.12"
 rand.workspace = true
