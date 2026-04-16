@@ -28,7 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
 zbus = { version = "4", features = ["tokio"] }
-rand = "0.8"
+rand = "0.10"
 parking_lot = "0.12"
 
 # PipeWire
