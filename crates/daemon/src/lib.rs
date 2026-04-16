@@ -6,6 +6,7 @@ use swaybeam_external::{ExternalResolution, VirtualOutput};
 
 use aes::Aes128;
 use ctr::cipher::{KeyIvInit, StreamCipher};
+use digest::KeyInit;
 use hmac::{Hmac, Mac};
 use parking_lot::RwLock as PlRwLock;
 use rand::{RngCore, rngs::OsRng};
