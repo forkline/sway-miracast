@@ -719,7 +719,7 @@ impl Daemon {
         // packet containing msg_id=2 followed by an 8-byte transmitter nonce.
         let mut ake_init = [0u8; 9];
         ake_init[0] = 0x02;
-        rand::thread_rng().fill_bytes(&mut ake_init[1..]);
+        OsRng.fill_bytes(&mut ake_init[1..]);
         let mut read_buffer = Vec::new();
 
         if !self

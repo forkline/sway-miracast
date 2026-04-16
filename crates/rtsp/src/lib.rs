@@ -870,7 +870,7 @@ impl RtspMessage {
 
 fn parse_header(lines: &[&str], header: &str) -> Option<String> {
     for line in lines {
-        if line.to_lowercase().starts_with(&header.to_lowercase()) {
+        if line.to_lowercase().starts_with(&header.to_lowercase()) && line.len() > header.len() + 1 {
             return Some(line[(header.len() + 1)..].trim().to_string());
         }
     }
