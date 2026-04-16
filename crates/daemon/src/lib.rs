@@ -1231,7 +1231,7 @@ impl Daemon {
 
     fn compute_hdcp_ctr_block(key: &[u8; 16], iv: &[u8; 16]) -> [u8; 16] {
         let mut block = [0u8; 16];
-        let mut cipher = ctr::Ctr128LE::<Aes128>::new(key.into(), iv.into());
+        let mut cipher = ctr::Ctr128LE::<Aes128>::new(&(*key).into(), &(*iv).into());
         cipher.apply_keystream(&mut block);
         block
     }
