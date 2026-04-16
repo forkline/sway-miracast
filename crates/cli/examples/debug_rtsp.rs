@@ -1,8 +1,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-const WFD_SOURCE_CAPS: &str =
-    "wfd_video_formats: 00 01 02 04 0001FEFF 3FFFFFFF 00000FFF 00 0000 0000 00 00000000 00 00000000 00\r\n\
+const WFD_SOURCE_CAPS: &str = "wfd_video_formats: 00 01 02 04 0001FEFF 3FFFFFFF 00000FFF 00 0000 0000 00 00000000 00 00000000 00\r\n\
      wfd_audio_codecs: AAC 00000001 00\r\n\
      wfd_client_rtp_ports: RTP/AVP/UDP;unicast 5004 5005 mode=play\r\n\
      wfd_uibc_capability: none\r\n";

@@ -125,13 +125,14 @@ pub fn check_sway() -> anyhow::Result<CheckResult> {
         let compositors = ["sway", "river", "labwc", "hyprland", "wayfire"];
         for compositor in compositors {
             let output = Command::new("pgrep").arg(compositor).output();
-            if let Ok(o) = output {
-                if o.status.success() && !o.stdout.is_empty() {
-                    return Ok(CheckResult::ok(&format!(
-                        "Running under {} (wlroots-compatible)",
-                        compositor
-                    )));
-                }
+            if let Ok(o) = output
+                && o.status.success()
+                && !o.stdout.is_empty()
+            {
+                return Ok(CheckResult::ok(&format!(
+                    "Running under {} (wlroots-compatible)",
+                    compositor
+                )));
             }
         }
 
@@ -180,7 +181,9 @@ pub fn check_pipewire() -> anyhow::Result<CheckResult> {
         // Try pipewire-pulse instead for older setups
         let pp_output = Command::new("pgrep").arg("pipewire-pulse").output()?;
         if !pp_output.status.success() || pp_output.stdout.is_empty() {
-            return Ok(CheckResult::warn("PipeWire core is running but missing media session manager (may cause streaming issues)"));
+            return Ok(CheckResult::warn(
+                "PipeWire core is running but missing media session manager (may cause streaming issues)",
+            ));
         }
     }
 
@@ -274,10 +277,10 @@ pub fn check_network_manager() -> anyhow::Result<CheckResult> {
                 .arg("State")
                 .output();
 
-            if let Ok(dbc) = dbus_call {
-                if dbc.status.success() {
-                    return Ok(CheckResult::ok("NetworkManager accessible via D-Bus"));
-                }
+            if let Ok(dbc) = dbus_call
+                && dbc.status.success()
+            {
+                return Ok(CheckResult::ok("NetworkManager accessible via D-Bus"));
             }
 
             // Try nmcli as final fallback
@@ -381,22 +384,22 @@ pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
     // First try D-Bus which is more reliable
     let dbus_check = Command::new("busctl").arg("--user").arg("list").output();
 
-    if let Ok(output) = dbus_check {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains("org.freedesktop.portal.Desktop") {
-                // Portal is running via D-Bus
-                if stdout.contains("xdg-desktop-portal-wlr") {
-                    return Ok(CheckResult::ok(
-                        "xdg-desktop-portal with WLR backend running",
-                    ));
-                } else if stdout.contains("xdg-desktop-portal-gtk") {
-                    return Ok(CheckResult::warn(
-                        "xdg-desktop-portal running with GTK backend (WLR backend preferred for Sway)",
-                    ));
-                } else {
-                    return Ok(CheckResult::ok("xdg-desktop-portal running"));
-                }
+    if let Ok(output) = dbus_check
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("org.freedesktop.portal.Desktop") {
+            // Portal is running via D-Bus
+            if stdout.contains("xdg-desktop-portal-wlr") {
+                return Ok(CheckResult::ok(
+                    "xdg-desktop-portal with WLR backend running",
+                ));
+            } else if stdout.contains("xdg-desktop-portal-gtk") {
+                return Ok(CheckResult::warn(
+                    "xdg-desktop-portal running with GTK backend (WLR backend preferred for Sway)",
+                ));
+            } else {
+                return Ok(CheckResult::ok("xdg-desktop-portal running"));
             }
         }
     }

@@ -86,7 +86,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                             Err(_) => {
                                 return Err(CliError::ParseError(
                                     "Invalid timeout value, must be a number".to_string(),
-                                ))
+                                ));
                             }
                         };
                         i += 2;
@@ -95,7 +95,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                         return Err(CliError::InvalidArgs(format!(
                             "Unknown option: {}",
                             args[i]
-                        )))
+                        )));
                     }
                 }
             }
@@ -151,7 +151,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                         return Err(CliError::InvalidArgs(format!(
                             "Unknown option for stream command: {}",
                             args[i]
-                        )))
+                        )));
                     }
                 }
             }

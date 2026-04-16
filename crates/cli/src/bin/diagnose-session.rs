@@ -657,18 +657,19 @@ fn run_interactive_diagnosis() -> Result<()> {
             continue;
         }
 
-        if let Ok(num) = trimmed.parse::<usize>() {
-            if num > 0 && num <= diagnoser.problems.len() {
-                let (name, desc, solutions) = &diagnoser.problems[num - 1];
-                println!("\n=== {} ===", name);
-                println!("Description: {}", desc);
-                println!("\nSolutions:");
-                for s in solutions {
-                    println!("  • {}", s);
-                }
-                println!();
-                continue;
+        if let Ok(num) = trimmed.parse::<usize>()
+            && num > 0
+            && num <= diagnoser.problems.len()
+        {
+            let (name, desc, solutions) = &diagnoser.problems[num - 1];
+            println!("\n=== {} ===", name);
+            println!("Description: {}", desc);
+            println!("\nSolutions:");
+            for s in solutions {
+                println!("  • {}", s);
             }
+            println!();
+            continue;
         }
 
         let results = diagnoser.diagnose(trimmed);
