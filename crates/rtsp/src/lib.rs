@@ -597,7 +597,10 @@ impl RtspSession {
         }
 
         // Fallback response
-        Ok(format!("Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n", self.session_id))
+        Ok(format!(
+            "Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n",
+            self.session_id
+        ))
     }
 
     /// Returns the negotiated video codec
@@ -617,9 +620,15 @@ impl RtspSession {
         self.transition_to(SessionState::Play);
         // Generate an informative response with port information from negotiated parameters
         let response = if let Some(ports) = &self.capabilities.client_rtp_ports {
-            format!("RTP-Info: url=rtsp://localhost:8554/stream;{}/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n", ports, self.session_id)
+            format!(
+                "RTP-Info: url=rtsp://localhost:8554/stream;{}/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n",
+                ports, self.session_id
+            )
         } else {
-            format!("RTP-Info: url=rtsp://localhost:8554/stream/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n", self.session_id)
+            format!(
+                "RTP-Info: url=rtsp://localhost:8554/stream/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n",
+                self.session_id
+            )
         };
 
         Ok(response)
@@ -1292,7 +1301,9 @@ impl RtspClient {
                     break;
                 }
                 Err(_) => {
-                    tracing::debug!("RTSP keepalive: no incoming request for 25s, sending GET_PARAMETER keepalive");
+                    tracing::debug!(
+                        "RTSP keepalive: no incoming request for 25s, sending GET_PARAMETER keepalive"
+                    );
                     if let Err(e) = self.send_keepalive_get_parameter().await {
                         tracing::warn!("RTSP keepalive: failed to send keepalive: {}", e);
                         break;
@@ -2044,7 +2055,10 @@ async fn handle_setup(
 
             let response = match session.process_setup(transport) {
                 Ok(response) => response,
-                Err(_) => format!("Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n", session.session_id),
+                Err(_) => format!(
+                    "Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n",
+                    session.session_id
+                ),
             };
 
             // Transition to Ready state (waiting for PLAY)

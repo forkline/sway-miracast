@@ -180,7 +180,9 @@ pub fn check_pipewire() -> anyhow::Result<CheckResult> {
         // Try pipewire-pulse instead for older setups
         let pp_output = Command::new("pgrep").arg("pipewire-pulse").output()?;
         if !pp_output.status.success() || pp_output.stdout.is_empty() {
-            return Ok(CheckResult::warn("PipeWire core is running but missing media session manager (may cause streaming issues)"));
+            return Ok(CheckResult::warn(
+                "PipeWire core is running but missing media session manager (may cause streaming issues)",
+            ));
         }
     }
 

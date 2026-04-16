@@ -570,7 +570,9 @@ impl P2pManager {
             (ip_address, interface_name)
         } else {
             if group_started.is_none() {
-                tracing::warn!("Did not observe P2P-GROUP-STARTED in wpa_supplicant logs; falling back to NetworkManager IP lookup");
+                tracing::warn!(
+                    "Did not observe P2P-GROUP-STARTED in wpa_supplicant logs; falling back to NetworkManager IP lookup"
+                );
             }
 
             let ip_address = match self.get_ip_from_active_connection(&active_conn_path).await {

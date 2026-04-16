@@ -9,18 +9,18 @@ use ctr::cipher::{KeyIvInit, StreamCipher};
 use digest::KeyInit;
 use hmac::{Hmac, Mac};
 use parking_lot::RwLock as PlRwLock;
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use rsa::{BigUint, Oaep, RsaPublicKey};
 use sha1::Sha1;
 use sha2::Sha256;
 use tokio::net::{TcpSocket, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 use swaybeam_capture::{Capture, CaptureConfig};
-use swaybeam_doctor::{check_all, Report as DoctorReport};
+use swaybeam_doctor::{Report as DoctorReport, check_all};
 use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
-use swaybeam_rtsp::{parse_wfd_client_rtp_port, NegotiatedCodec, RtspClient, RtspServer};
+use swaybeam_rtsp::{NegotiatedCodec, RtspClient, RtspServer, parse_wfd_client_rtp_port};
 use swaybeam_stream::{AudioCodec, StreamConfig, StreamPipeline, VideoCodec};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1167,7 +1167,9 @@ impl Daemon {
         if use_hdcp22_iv {
             if let Some(rrx) = rrx {
                 iv[8..15].copy_from_slice(&rrx[..7]);
-                info!("Kd derivation: Using HDCP 2.2+ IV construction (r_tx || r_rx[0..7] || counter)");
+                info!(
+                    "Kd derivation: Using HDCP 2.2+ IV construction (r_tx || r_rx[0..7] || counter)"
+                );
             } else {
                 tracing::warn!("HDCP 2.2+ IV requires r_rx but it's missing, using fallback");
             }
