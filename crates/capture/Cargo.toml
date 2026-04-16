@@ -9,7 +9,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }
-zvariant = { workspace = true, optional = true }
 libc = "0.2"
 pipewire = { workspace = true, optional = true }
 libspa = { workspace = true, optional = true }
@@ -29,4 +28,4 @@ required-features = ["real_portal"]
 
 [features]
 default = []
-real_portal = ["dep:zbus", "dep:zvariant", "dep:pipewire", "dep:libspa", "dep:futures-util", "dep:tokio-stream", "dep:serde"]
+real_portal = ["dep:zbus", "dep:pipewire", "dep:libspa", "dep:futures-util", "dep:tokio-stream", "dep:serde"]
