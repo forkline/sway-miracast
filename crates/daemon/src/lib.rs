@@ -365,10 +365,10 @@ impl Daemon {
 
         let pipeline = StreamPipeline::new(stream_config)?;
 
-        if let Some(ref conn) = self.connection {
-            if let Some(ref sink_ip) = conn.get_sink().ip_address {
-                pipeline.set_output(sink_ip, 5004).await?;
-            }
+        if let Some(ref conn) = self.connection
+            && let Some(ref sink_ip) = conn.get_sink().ip_address
+        {
+            pipeline.set_output(sink_ip, 5004).await?;
         }
 
         pipeline.start().await?;
@@ -626,10 +626,10 @@ impl Daemon {
             while idr_rx.recv().await.is_some() {
                 info!("IDR request received from TV, forcing keyframe");
                 let guard = stream_arc.read().await;
-                if let Some(ref pipeline) = *guard {
-                    if let Err(e) = pipeline.force_keyframe().await {
-                        error!("Failed to force keyframe: {}", e);
-                    }
+                if let Some(ref pipeline) = *guard
+                    && let Err(e) = pipeline.force_keyframe().await
+                {
+                    error!("Failed to force keyframe: {}", e);
                 }
             }
         });
@@ -1501,10 +1501,10 @@ impl Daemon {
             while idr_rx.recv().await.is_some() {
                 info!("IDR request received from TV, forcing keyframe");
                 let guard = stream_arc.read().await;
-                if let Some(ref pipeline) = *guard {
-                    if let Err(e) = pipeline.force_keyframe().await {
-                        error!("Failed to force keyframe: {}", e);
-                    }
+                if let Some(ref pipeline) = *guard
+                    && let Err(e) = pipeline.force_keyframe().await
+                {
+                    error!("Failed to force keyframe: {}", e);
                 }
             }
         });
