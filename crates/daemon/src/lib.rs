@@ -8,7 +8,7 @@ use aes::Aes128;
 use ctr::cipher::{KeyIvInit, StreamCipher};
 use hmac::{Hmac, Mac};
 use parking_lot::RwLock as PlRwLock;
-use rand::{rngs::SysRng, RngCore};
+use rand::OsRng;
 use rsa::{BigUint, Oaep, RsaPublicKey};
 use sha1::Sha1;
 use sha2::Sha256;
@@ -837,8 +837,8 @@ impl Daemon {
         };
 
         let mut km = [0u8; 16];
-        SysRng.fill_bytes(&mut km);
-        let ekpub_km = match public_key.encrypt(&mut SysRng, Oaep::new::<Sha1>(), &km) {
+        OsRng.fill_bytes(&mut km);
+        let ekpub_km = match public_key.encrypt(&mut OsRng, Oaep::new::<Sha1>(), &km) {
             Ok(ciphertext) => ciphertext,
             Err(err) => {
                 tracing::warn!(
@@ -962,7 +962,7 @@ impl Daemon {
                 if !hdcp_session.sent_lc_init {
                     info!("Received L_prime before LC_Init; sending LC_Init now");
                     let mut rn = [0u8; 8];
-                    SysRng.fill_bytes(&mut rn);
+                    OsRng.fill_bytes(&mut rn);
                     if !self.send_hdcp_lc_init(hdcp_stream, &rn).await {
                         tracing::warn!("Failed to send LC_Init");
                         return;
@@ -1037,7 +1037,7 @@ impl Daemon {
             && !hdcp_session.sent_lc_init
         {
             let mut rn = [0u8; 8];
-            SysRng.fill_bytes(&mut rn);
+            OsRng.fill_bytes(&mut rn);
             if self.send_hdcp_lc_init(hdcp_stream, &rn).await {
                 hdcp_session.rn = Some(rn);
                 hdcp_session.sent_lc_init = true;
@@ -1086,8 +1086,8 @@ impl Daemon {
 
         let mut ks = [0u8; 16];
         let mut riv = [0u8; 8];
-        SysRng.fill_bytes(&mut ks);
-        SysRng.fill_bytes(&mut riv);
+        OsRng.fill_bytes(&mut ks);
+        OsRng.fill_bytes(&mut riv);
 
         let mut eks = [0u8; 16];
         for (out, (ks_byte, mask_byte)) in eks.iter_mut().zip(ks.iter().zip(xor_mask.iter())) {
