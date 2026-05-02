@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 #[derive(Debug, Clone)]
 pub struct TestPatternConfig {
@@ -48,7 +48,7 @@ impl TestPatternGenerator {
         for y in 0..height {
             for x in 0..width {
                 // Determine which color bar this pixel belongs to
-let bar_index = if bar_width > 0 { x / bar_width } else { 0 };
+                let bar_index = if bar_width > 0 { x / bar_width } else { 0 };
 
                 // Cycle through bars over time for animation
                 let animated_bar_index = (bar_index + frame_num) % 8;
@@ -124,7 +124,7 @@ let bar_index = if bar_width > 0 { x / bar_width } else { 0 };
 
 #[cfg(test)]
 mod tests {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     #[tokio::test]
     async fn test_test_pattern_generator() {
