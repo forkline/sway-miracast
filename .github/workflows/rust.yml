@@ -18,6 +18,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  checks: write
+
 jobs:
   fmt:
     name: Rustfmt
@@ -61,7 +65,7 @@ jobs:
       - run: rustup override set ${{steps.toolchain.outputs.name}}
       - run: rustup component add clippy
 
-      - uses: clechasseur/rs-clippy-check@v5
+      - uses: clechasseur/rs-clippy-check@v6
         with:
           args: --all-features -- --deny warnings
 
