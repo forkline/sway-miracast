@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 #[derive(Debug, Clone)]
 pub struct TestPatternConfig {
@@ -124,7 +124,7 @@ impl TestPatternGenerator {
 
 #[cfg(test)]
 mod tests {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     #[tokio::test]
     async fn test_test_pattern_generator() {

@@ -18,11 +18,12 @@ parking_lot.workspace = true
 gstreamer.workspace = true
 aes = "0.9"
 ctr = "0.10"
-hmac = "0.12"
+digest = "0.11"
+hmac = "0.13"
 rand.workspace = true
 rsa = { version = "0.9", features = ["sha2", "sha1"] }
 sha1 = "0.10"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 pipewire.workspace = true
