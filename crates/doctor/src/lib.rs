@@ -125,7 +125,7 @@ pub fn check_sway() -> anyhow::Result<CheckResult> {
         let compositors = ["sway", "river", "labwc", "hyprland", "wayfire"];
         for compositor in compositors {
             let output = Command::new("pgrep").arg(compositor).output();
-            if let Ok(o) = output
+if let Ok(o) = output
                 && o.status.success()
                 && !o.stdout.is_empty()
             {
@@ -181,7 +181,7 @@ pub fn check_pipewire() -> anyhow::Result<CheckResult> {
         // Try pipewire-pulse instead for older setups
         let pp_output = Command::new("pgrep").arg("pipewire-pulse").output()?;
         if !pp_output.status.success() || pp_output.stdout.is_empty() {
-            return Ok(CheckResult::warn(
+return Ok(CheckResult::warn(
                 "PipeWire core is running but missing media session manager (may cause streaming issues)",
             ));
         }
@@ -277,7 +277,7 @@ pub fn check_network_manager() -> anyhow::Result<CheckResult> {
                 .arg("State")
                 .output();
 
-            if let Ok(dbc) = dbus_call
+if let Ok(dbc) = dbus_call
                 && dbc.status.success()
             {
                 return Ok(CheckResult::ok("NetworkManager accessible via D-Bus"));
@@ -384,7 +384,7 @@ pub fn check_xdg_desktop_portal() -> anyhow::Result<CheckResult> {
     // First try D-Bus which is more reliable
     let dbus_check = Command::new("busctl").arg("--user").arg("list").output();
 
-    if let Ok(output) = dbus_check
+if let Ok(output) = dbus_check
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);

@@ -657,7 +657,7 @@ fn run_interactive_diagnosis() -> Result<()> {
             continue;
         }
 
-        if let Ok(num) = trimmed.parse::<usize>()
+if let Ok(num) = trimmed.parse::<usize>()
             && num > 0
             && num <= diagnoser.problems.len()
         {

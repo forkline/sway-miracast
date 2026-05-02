@@ -319,7 +319,7 @@ impl P2pManager {
                         tracing::info!("Discovered peer: {}", peer);
                         discovered_peers.push(peer);
 
-                        if let Some(preferred_sink) = preferred_sink
+if let Some(preferred_sink) = preferred_sink
                             && let Some(sink) = self.peer_to_sink(&peer_path.peer).await?
                         {
                             let preferred_address = preferred_sink.to_ascii_lowercase();
@@ -570,7 +570,7 @@ impl P2pManager {
             (ip_address, interface_name)
         } else {
             if group_started.is_none() {
-                tracing::warn!(
+tracing::warn!(
                     "Did not observe P2P-GROUP-STARTED in wpa_supplicant logs; falling back to NetworkManager IP lookup"
                 );
             }
@@ -805,7 +805,7 @@ impl P2pManager {
             })?;
 
         for _ in 0..90 {
-            if let Ok(ip4_config_path) = device_proxy.ip4_config().await
+if let Ok(ip4_config_path) = device_proxy.ip4_config().await
                 && ip4_config_path.as_str() != "/"
             {
                 let ip4_config = IP4ConfigProxy::builder(&self.connection)
@@ -851,6 +851,9 @@ impl P2pManager {
             if let Ok(ip4_config_path) = active_conn_proxy
                 .get_property::<zvariant::OwnedObjectPath>("Ip4Config")
                 .await
+if let Ok(ip4_config_path) = active_conn_proxy
+                .get_property::<zvariant::OwnedObjectPath>("Ip4Config")
+                .await
                 && ip4_config_path.as_str() != "/"
             {
                 let ip4_config = IP4ConfigProxy::builder(&self.connection)
@@ -864,6 +867,10 @@ impl P2pManager {
                     let ip_str = format_ipv4(u32::from_be(*addr));
                     tracing::debug!("Got IP from active connection: {}", ip_str);
                     return Ok(ip_str);
+                }
+            }
+                    }
+>>>>>>> origin/main
                 }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;

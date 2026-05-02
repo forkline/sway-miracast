@@ -9,18 +9,18 @@ use ctr::cipher::{KeyIvInit, StreamCipher};
 use digest::KeyInit;
 use hmac::{Hmac, Mac};
 use parking_lot::RwLock as PlRwLock;
-use rand::{RngCore, rngs::OsRng};
+use rand::{rngs::OsRng, RngCore};
 use rsa::{BigUint, Oaep, RsaPublicKey};
 use sha1::Sha1;
 use sha2::Sha256;
 use tokio::net::{TcpSocket, TcpStream};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 use swaybeam_capture::{Capture, CaptureConfig};
-use swaybeam_doctor::{Report as DoctorReport, check_all};
+use swaybeam_doctor::{check_all, Report as DoctorReport};
 use swaybeam_net::{NetError, P2pConfig, P2pConnection, P2pManager, Sink};
-use swaybeam_rtsp::{NegotiatedCodec, RtspClient, RtspServer, parse_wfd_client_rtp_port};
+use swaybeam_rtsp::{parse_wfd_client_rtp_port, NegotiatedCodec, RtspClient, RtspServer};
 use swaybeam_stream::{AudioCodec, StreamConfig, StreamPipeline, VideoCodec};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -365,7 +365,7 @@ impl Daemon {
 
         let pipeline = StreamPipeline::new(stream_config)?;
 
-        if let Some(ref conn) = self.connection
+if let Some(ref conn) = self.connection
             && let Some(ref sink_ip) = conn.get_sink().ip_address
         {
             pipeline.set_output(sink_ip, 5004).await?;
@@ -626,7 +626,7 @@ impl Daemon {
             while idr_rx.recv().await.is_some() {
                 info!("IDR request received from TV, forcing keyframe");
                 let guard = stream_arc.read().await;
-                if let Some(ref pipeline) = *guard
+if let Some(ref pipeline) = *guard
                     && let Err(e) = pipeline.force_keyframe().await
                 {
                     error!("Failed to force keyframe: {}", e);
@@ -1167,7 +1167,7 @@ impl Daemon {
         if use_hdcp22_iv {
             if let Some(rrx) = rrx {
                 iv[8..15].copy_from_slice(&rrx[..7]);
-                info!(
+info!(
                     "Kd derivation: Using HDCP 2.2+ IV construction (r_tx || r_rx[0..7] || counter)"
                 );
             } else {
@@ -1501,7 +1501,7 @@ impl Daemon {
             while idr_rx.recv().await.is_some() {
                 info!("IDR request received from TV, forcing keyframe");
                 let guard = stream_arc.read().await;
-                if let Some(ref pipeline) = *guard
+if let Some(ref pipeline) = *guard
                     && let Err(e) = pipeline.force_keyframe().await
                 {
                     error!("Failed to force keyframe: {}", e);
