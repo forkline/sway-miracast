@@ -18,17 +18,13 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
-  checks: write
-
 jobs:
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install stable toolchain
         id: toolchain
@@ -45,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
@@ -65,7 +61,7 @@ jobs:
       - run: rustup override set ${{steps.toolchain.outputs.name}}
       - run: rustup component add clippy
 
-      - uses: clechasseur/rs-clippy-check@v6.0.3
+      - uses: clechasseur/rs-clippy-check@v5
         with:
           args: --all-features -- --deny warnings
 
@@ -74,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
@@ -100,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
@@ -124,7 +120,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [fmt, clippy, test]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - uses: Swatinem/rust-cache@v2
 

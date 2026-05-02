@@ -1973,7 +1973,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swaybeam-audio"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "thiserror",
@@ -1984,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "swaybeam-capture"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -2006,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "swaybeam-cli"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "swaybeam-daemon"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "aes",
  "anyhow",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "swaybeam-doctor"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "thiserror",
@@ -2063,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "swaybeam-external"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "thiserror",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "swaybeam-net"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "futures-util",
  "thiserror",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "swaybeam-rtsp"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "swaybeam-stream"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "gstreamer",
