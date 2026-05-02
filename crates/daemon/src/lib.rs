@@ -1084,24 +1084,24 @@ impl Daemon {
         let km_hex: String = km.iter().map(|b| format!("{:02x}", b)).collect();
         info!("HDCP Km generated: {}", km_hex);
 
-        let ekpub_km = match public_key.encrypt(&mut OsRng, Oaep::new::<Sha1>(), &km) {
+        let ekpub_km = match public_key.encrypt(&mut OsRng, Pkcs1v15Encrypt, &km) {
             Ok(ciphertext) => {
-                info!("HDCP RSA-OAEP encryption successful");
+                info!("HDCP RSA PKCS#1 v1.5 encryption successful (HDCP 2.0/2.1 preferred)");
                 ciphertext
             }
             Err(err) => {
                 tracing::warn!(
-                    "HDCP RSA-OAEP encryption failed: {}, trying PKCS#1 v1.5",
+                    "HDCP RSA PKCS#1 v1.5 encryption failed: {}, trying OAEP",
                     err
                 );
-                match public_key.encrypt(&mut OsRng, Pkcs1v15Encrypt, &km) {
+                match public_key.encrypt(&mut OsRng, Oaep::new::<Sha1>(), &km) {
                     Ok(ciphertext) => {
-                        info!("HDCP RSA PKCS#1 v1.5 encryption successful");
+                        info!("HDCP RSA-OAEP encryption successful");
                         ciphertext
                     }
                     Err(err2) => {
                         tracing::warn!(
-                            "Failed to encrypt HDCP Km with both OAEP and PKCS#1 v1.5: {}",
+                            "Failed to encrypt HDCP Km with both PKCS#1 v1.5 and OAEP: {}",
                             err2
                         );
                         return None;
