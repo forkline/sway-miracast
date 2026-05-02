@@ -200,13 +200,17 @@ impl WfdCapabilities {
             // WFD 1.x uses codec mask with bit 4 (0x10) for H.265 support
             for format in &formats_list {
                 let components: Vec<&str> = format.split_whitespace().collect();
-                if components.len() >= 4
-                    && let Ok(mask) = u64::from_str_radix(components[3], 16)
-                {
-                    tracing::debug!("Checking codec mask in format '{}': mask={}", format, mask);
-                    if (mask & 0x0000000000000010) != 0 {
-                        tracing::debug!("Codec mask indicates H.265 support");
-                        return NegotiatedCodec::H265;
+                if components.len() >= 4 {
+                    if let Ok(mask) = u64::from_str_radix(components[3], 16) {
+                        tracing::debug!(
+                            "Checking codec mask in format '{}': mask={}",
+                            format,
+                            mask
+                        );
+                        if (mask & 0x0000000000000010) != 0 {
+                            tracing::debug!("Codec mask indicates H.265 support");
+                            return NegotiatedCodec::H265;
+                        }
                     }
                 }
             }
@@ -254,9 +258,11 @@ impl WfdCapabilities {
         tracing::debug!("Found H.264 format: {:?}", h264_format);
         tracing::debug!("Found H.265 format: {:?}", h265_format);
 
-        if prefer_hevc && let Some(h265) = h265_format {
-            tracing::info!("Selected H.265 format from TV: {}", h265);
-            return h265.to_string();
+if prefer_hevc {
+            if let Some(h265) = h265_format {
+                tracing::info!("Selected H.265 format from TV: {}", h265);
+                return h265.to_string();
+            }
         }
 
         if let Some(h264) = h264_format {
@@ -567,34 +573,31 @@ impl RtspSession {
 
                 // Client port format can be "port" or "port1-port2" for RTP-RTCP
                 let ports: Vec<&str> = port_range.split('-').collect();
-                if let Some(first_port_str) = ports.first()
-                    && let Ok(port_num) = first_port_str.parse::<u16>()
-                {
-                    // Store the negotiated RTP port information
-                    self.rtp_destination = Some(RtpDestination {
-                        ip: "0.0.0.0".to_string(), // Will be updated with actual client IP
-                        port: port_num,
-                    });
+if let Some(first_port_str) = ports.first() {
+                    if let Ok(port_num) = first_port_str.parse::<u16>() {
+                        // Store the negotiated RTP port information
+                        self.rtp_destination = Some(RtpDestination {
+                            ip: "0.0.0.0".to_string(), // Will be updated with actual client IP
+                            port: port_num,
+                        });
 
-                    // Transition through states in a proper sequence
-                    if self.state == SessionState::SetParamReceived {
-                        self.state = SessionState::Play; // SETUP completes the setup phase
+                        // Transition through states in a proper sequence
+                        if self.state == SessionState::SetParamReceived {
+                            self.state = SessionState::Play; // SETUP completes the setup phase
+                        }
+
+                        // Prepare response with server parameters
+                        return Ok(format!(
+                            "Transport: RTP/AVP/UDP;unicast;client_port={};server_port=5004-5005\r\nSession: {};timeout=30\r\n",
+                            port_range, self.session_id
+                        ));
                     }
-
-                    // Prepare response with server parameters
-                    return Ok(format!(
-                        "Transport: RTP/AVP/UDP;unicast;client_port={};server_port=5004-5005\r\nSession: {};timeout=30\r\n",
-                        port_range, self.session_id
-                    ));
                 }
             }
         }
 
         // Fallback response
-        Ok(format!(
-            "Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n",
-            self.session_id
-        ))
+        Ok(format!("Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n", self.session_id))
     }
 
     /// Returns the negotiated video codec
@@ -614,15 +617,9 @@ impl RtspSession {
         self.transition_to(SessionState::Play);
         // Generate an informative response with port information from negotiated parameters
         let response = if let Some(ports) = &self.capabilities.client_rtp_ports {
-            format!(
-                "RTP-Info: url=rtsp://localhost:8554/stream;{}/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n",
-                ports, self.session_id
-            )
+            format!("RTP-Info: url=rtsp://localhost:8554/stream;{}/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n", ports, self.session_id)
         } else {
-            format!(
-                "RTP-Info: url=rtsp://localhost:8554/stream/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n",
-                self.session_id
-            )
+            format!("RTP-Info: url=rtsp://localhost:8554/stream/trackID=1;seq=123456;rtptime=123456789\r\nSession: {}\r\n", self.session_id)
         };
 
         Ok(response)
@@ -1218,10 +1215,10 @@ impl RtspClient {
                 .await
                 .map_err(RtspError::Io)?;
 
-            if outcome.idr_requested
-                && let Some(ref tx) = self.idr_tx
-            {
-                let _ = tx.send(());
+if outcome.idr_requested {
+                if let Some(ref tx) = self.idr_tx {
+                    let _ = tx.send(());
+                }
             }
 
             if let Some(play_info) = outcome.play_info {
@@ -1260,16 +1257,19 @@ impl RtspClient {
 
                     match self.build_peer_request_response(&message) {
                         Ok(outcome) => {
-                            if outcome.idr_requested
-                                && let Some(ref tx) = self.idr_tx
-                            {
-                                let _ = tx.send(());
+                            if outcome.idr_requested {
+                                if let Some(ref tx) = self.idr_tx {
+                                    let _ = tx.send(());
+                                }
                             }
-                            if let Some(ref mut stream) = self.stream
-                                && let Err(e) = stream.write_all(outcome.response.as_bytes()).await
-                            {
-                                tracing::warn!("RTSP keepalive: failed to send response: {}", e);
-                                break;
+                            if let Some(ref mut stream) = self.stream {
+                                if let Err(e) = stream.write_all(outcome.response.as_bytes()).await {
+                                    tracing::warn!("RTSP keepalive: failed to respond: {}", e);
+                                    break;
+                                }
+                            }
+                            if outcome.play_info.is_some() {
+                                tracing::info!("RTSP keepalive: received PLAY, continuing keepalive");
                             }
                             if is_teardown {
                                 tracing::info!("RTSP keepalive: TEARDOWN received, ending session");
@@ -1291,9 +1291,7 @@ impl RtspClient {
                     break;
                 }
                 Err(_) => {
-                    tracing::debug!(
-                        "RTSP keepalive: no incoming request for 25s, sending GET_PARAMETER keepalive"
-                    );
+                    tracing::debug!("RTSP keepalive: no incoming request for 25s, sending GET_PARAMETER keepalive");
                     if let Err(e) = self.send_keepalive_get_parameter().await {
                         tracing::warn!("RTSP keepalive: failed to send keepalive: {}", e);
                         break;
@@ -2045,10 +2043,7 @@ async fn handle_setup(
 
             let response = match session.process_setup(transport) {
                 Ok(response) => response,
-                Err(_) => format!(
-                    "Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n",
-                    session.session_id
-                ),
+                Err(_) => format!("Transport: RTP/AVP/UDP;unicast;client_port=5004-5005;server_port=5004-5005\r\nSession: {};timeout=30\r\n", session.session_id),
             };
 
             // Transition to Ready state (waiting for PLAY)

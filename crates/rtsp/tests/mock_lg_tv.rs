@@ -113,9 +113,7 @@ impl MockLgTvClient {
         let params = "wfd_video_formats\r\nwfd_audio_codecs\r\nwfd_client_rtp_ports\r\n";
         let request = format!(
             "GET_PARAMETER rtsp://localhost/stream RTSP/1.0\r\nCSeq: {}\r\nContent-Length: {}\r\n\r\n{}",
-            self.cseq,
-            params.len(),
-            params
+            self.cseq, params.len(), params
         );
         let response = self.send(&request).await?;
 
@@ -142,9 +140,7 @@ impl MockLgTvClient {
 
         let request = format!(
             "SET_PARAMETER rtsp://localhost/stream RTSP/1.0\r\nCSeq: {}\r\nContent-Type: text/parameters\r\nContent-Length: {}\r\n\r\n{}",
-            self.cseq,
-            body.len(),
-            body
+            self.cseq, body.len(), body
         );
         let response = self.send(&request).await?;
         self.state = MockTvState::SetParamSent;
@@ -155,9 +151,7 @@ impl MockLgTvClient {
         self.cseq += 1;
         let request = format!(
             "SETUP rtsp://localhost/stream RTSP/1.0\r\nCSeq: {}\r\nTransport: RTP/AVP/UDP;unicast;client_port={}-{}\r\n\r\n",
-            self.cseq,
-            self.rtp_port,
-            self.rtp_port + 1
+            self.cseq, self.rtp_port, self.rtp_port + 1
         );
         let response = self.send(&request).await?;
 

@@ -365,10 +365,10 @@ impl Daemon {
 
         let pipeline = StreamPipeline::new(stream_config)?;
 
-if let Some(ref conn) = self.connection
-            && let Some(ref sink_ip) = conn.get_sink().ip_address
-        {
-            pipeline.set_output(sink_ip, 5004).await?;
+        if let Some(ref conn) = self.connection {
+            if let Some(ref sink_ip) = conn.get_sink().ip_address {
+                pipeline.set_output(sink_ip, 5004).await?;
+            }
         }
 
         pipeline.start().await?;
@@ -626,10 +626,10 @@ if let Some(ref conn) = self.connection
             while idr_rx.recv().await.is_some() {
                 info!("IDR request received from TV, forcing keyframe");
                 let guard = stream_arc.read().await;
-if let Some(ref pipeline) = *guard
-                    && let Err(e) = pipeline.force_keyframe().await
-                {
-                    error!("Failed to force keyframe: {}", e);
+                if let Some(ref pipeline) = *guard {
+                    if let Err(e) = pipeline.force_keyframe().await {
+                        error!("Failed to force keyframe: {}", e);
+                    }
                 }
             }
         });
@@ -1165,17 +1165,15 @@ if let Some(ref pipeline) = *guard
         iv[..8].copy_from_slice(rtx);
 
         if use_hdcp22_iv {
-            if let Some(rrx) = rrx {
-                iv[8..15].copy_from_slice(&rrx[..7]);
-info!(
-                    "Kd derivation: Using HDCP 2.2+ IV construction (r_tx || r_rx[0..7] || counter)"
-                );
+                if let Some(rrx) = rrx {
+                    iv[8..15].copy_from_slice(&rrx[..7]);
+                    info!("Kd derivation: Using HDCP 2.2+ IV construction (r_tx || r_rx[0..7] || counter)");
+                } else {
+                    tracing::warn!("HDCP 2.2+ IV requires r_rx but it's missing, using fallback");
+                }
             } else {
-                tracing::warn!("HDCP 2.2+ IV requires r_rx but it's missing, using fallback");
+                info!("Kd derivation: Using HDCP 2.0/2.1 IV construction (r_tx || zeros || counter)");
             }
-        } else {
-            info!("Kd derivation: Using HDCP 2.0/2.1 IV construction (r_tx || zeros || counter)");
-        }
 
         let iv_hex: String = iv.iter().map(|b| format!("{:02x}", b)).collect();
         info!("Kd derivation: IV for first block: {}", iv_hex);
@@ -1501,10 +1499,10 @@ info!(
             while idr_rx.recv().await.is_some() {
                 info!("IDR request received from TV, forcing keyframe");
                 let guard = stream_arc.read().await;
-if let Some(ref pipeline) = *guard
-                    && let Err(e) = pipeline.force_keyframe().await
-                {
-                    error!("Failed to force keyframe: {}", e);
+                if let Some(ref pipeline) = *guard {
+                    if let Err(e) = pipeline.force_keyframe().await {
+                        error!("Failed to force keyframe: {}", e);
+                    }
                 }
             }
         });

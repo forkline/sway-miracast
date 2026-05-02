@@ -329,17 +329,19 @@ impl Capture {
         info!("Stopping capture...");
 
         #[cfg(feature = "real_portal")]
-        if let Some(session_handle) = self.session_handle.take()
-            && let Ok(conn) = zbus::Connection::session().await
-            && let Ok(proxy) = zbus::Proxy::new(
-                &conn,
-                "org.freedesktop.portal.Desktop",
-                session_handle.as_str(),
-                "org.freedesktop.portal.Session",
-            )
-            .await
-        {
-            let _ = proxy.call_method("Close", &()).await;
+        if let Some(session_handle) = self.session_handle.take() {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.freedesktop.portal.Desktop",
+                    session_handle.as_str(),
+                    "org.freedesktop.portal.Session",
+                )
+                .await
+                {
+                    let _ = proxy.call_method("Close", &()).await;
+                }
+            }
         }
 
         self.active = false;

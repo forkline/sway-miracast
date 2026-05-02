@@ -84,9 +84,9 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                         timeout = match args[i + 1].parse::<u64>() {
                             Ok(val) => Some(val),
                             Err(_) => {
-                                return Err(CliError::ParseError(
-                                    "Invalid timeout value, must be a number".to_string(),
-                                ));
+return Err(CliError::ParseError(
+                                "Invalid timeout value, must be a number".to_string(),
+                            ));
                             }
                         };
                         i += 2;

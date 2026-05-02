@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, interval};
+use tokio::time::{interval, Duration};
 
 #[derive(Debug, Clone)]
 pub struct TestPatternConfig {
@@ -48,7 +48,7 @@ impl TestPatternGenerator {
         for y in 0..height {
             for x in 0..width {
                 // Determine which color bar this pixel belongs to
-                let bar_index = x.checked_div(bar_width).unwrap_or(0);
+let bar_index = if bar_width > 0 { x / bar_width } else { 0 };
 
                 // Cycle through bars over time for animation
                 let animated_bar_index = (bar_index + frame_num) % 8;
@@ -63,15 +63,21 @@ impl TestPatternGenerator {
 
                 // Set BGRA values
                 if is_moving_line {
-                    frame_data[idx] = 255;
-                    frame_data[idx + 1] = 255;
-                    frame_data[idx + 2] = 255;
-                    frame_data[idx + 3] = 255;
+                    // Bright white line that moves across the screen
+                    {
+                        frame_data[idx] = 255; // B
+                        frame_data[idx + 1] = 255; // G
+                        frame_data[idx + 2] = 255; // R
+                        frame_data[idx + 3] = 255; // A
+                    }
                 } else {
-                    frame_data[idx] = color[2];
-                    frame_data[idx + 1] = color[1];
-                    frame_data[idx + 2] = color[0];
-                    frame_data[idx + 3] = 255;
+                    // Standard color bars
+                    {
+                        frame_data[idx] = color[2]; // B
+                        frame_data[idx + 1] = color[1]; // G
+                        frame_data[idx + 2] = color[0]; // R
+                        frame_data[idx + 3] = 255; // A
+                    }
                 }
             }
         }
@@ -118,7 +124,7 @@ impl TestPatternGenerator {
 
 #[cfg(test)]
 mod tests {
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn test_test_pattern_generator() {

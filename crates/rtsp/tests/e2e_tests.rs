@@ -6,8 +6,8 @@ mod mock_lg_tv;
 use mock_lg_tv::*;
 use std::time::Duration;
 use swaybeam_rtsp::{
-    RtspClient, RtspMessage, RtspServer, RtspSession, SessionState, WfdCapabilities,
-    parse_wfd_client_rtp_port, parse_wfd_content_protection_port,
+    parse_wfd_client_rtp_port, parse_wfd_content_protection_port, RtspClient, RtspMessage,
+    RtspServer, RtspSession, SessionState, WfdCapabilities,
 };
 
 /// Test WFD Device Information IE format

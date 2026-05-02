@@ -406,12 +406,12 @@ fn validate_rtp_port_spec(spec: &str) -> WfdValidationResult {
 fn regex_lite_match(s: &str) -> Option<String> {
     let parts: Vec<&str> = s.split_whitespace().collect();
     for part in parts {
-        if part.chars().all(|c| c.is_ascii_digit())
-            && let Ok(num) = part.parse::<u64>()
-            && num > 0
-            && num <= 65535
-        {
-            return Some(part.to_string());
+if part.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(num) = part.parse::<u64>() {
+                if num > 0 && num <= 65535 {
+                    return Some(part.to_string());
+                }
+            }
         }
     }
     None
