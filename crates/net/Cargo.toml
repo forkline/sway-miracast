@@ -9,4 +9,3 @@ tokio = { workspace = true, features = ["time", "macros", "sync"] }
 thiserror.workspace = true
 tracing.workspace = true
 futures-util.workspace = true
-zvariant.workspace = true
